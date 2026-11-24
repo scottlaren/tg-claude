@@ -2,7 +2,7 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
-## Unreleased
+## 0.18.0
 
 - **The code is open.** The repository is public under the PolyForm Noncommercial license: free for personal and other noncommercial use. A server now installs without a GitHub token.
 - **Windows really goes to sleep.** At the end of a night shift a Windows computer was told to sleep and stayed awake: Windows refused the request without saying so. Now it sleeps, and the bot no longer calls a computer asleep when its agent only reconnected.
