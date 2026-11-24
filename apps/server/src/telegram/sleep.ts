@@ -1,5 +1,5 @@
-// Putting a computer to sleep at a night shift's end, a minute after the order so the summary is out and the links
-// settle, from a process of its own: the command returns at once
+// Putting a computer to sleep, or turning it off, at a night shift's end or at the user's tap: a minute after the
+// order so the summary is out and the links settle, from a process of its own: the command returns at once
 
 // Windows' own suspend, not rundll32's (which hibernates when hibernation is on). It takes the shutdown privilege,
 // which every user has but no process holds switched on: without it the call is logged and nothing happens. The outcome
@@ -47,3 +47,16 @@ export function sleepCommand(os: SleepOs, dry = false): { program: string, args:
   if (os === 'linux') return { program: 'sh', args: ['-c', 'nohup sh -c "sleep 60; systemctl suspend" >/dev/null 2>&1 &'] }
   return null
 }
+
+// Turning it off: only ever the user's own choice, by a button. Windows ends what is still open itself (/f, which a
+// delay implies anyway): an app asking to save would otherwise hold the computer on all night. A Mac asks System Events,
+// which macOS lets an app do only after the user allowed it once
+export function offCommand(os: SleepOs): { program: string, args: string[] } | null {
+  if (os === 'windows') return { program: 'shutdown', args: ['/s', '/f', '/t', '60'] }
+  if (os === 'macos') return { program: 'sh', args: ['-c', `nohup sh -c "sleep 60; osascript -e 'tell application \\"System Events\\" to shut down'" >/dev/null 2>&1 &`] }
+  if (os === 'linux') return { program: 'sh', args: ['-c', 'nohup sh -c "sleep 60; systemctl poweroff" >/dev/null 2>&1 &'] }
+  return null
+}
+
+export type PowerHow = 'sleep' | 'off'
+export const powerCommand = (os: SleepOs, how: PowerHow) => (how === 'off' ? offCommand(os) : sleepCommand(os))

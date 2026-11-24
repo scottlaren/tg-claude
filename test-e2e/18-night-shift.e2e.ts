@@ -14,7 +14,7 @@ describe('a night shift', () => {
   let s: Stack
   let zone = ''
   const prompts = () => s.journal().filter(j => j.kind === 'turn')
-  const offer = (o: { sleep: boolean, release: boolean }) => ({ tool: 'mcp__night_shift__offer_night_shift', input: { tasks: ['Собрать сцену', 'Проверить цены'], ...o } })
+  const offer = (o: { power: 'on' | 'sleep' | 'off', release: boolean }) => ({ tool: 'mcp__night_shift__offer_night_shift', input: { tasks: ['Собрать сцену', 'Проверить цены'], ...o } })
 
   async function topic(name: string, project: string) {
     const open = Date.now()
@@ -46,7 +46,7 @@ describe('a night shift', () => {
   test('said in words: a card first, the shift on a tap; the night asks nothing, and the end puts the computer to sleep, or says it stayed awake', async () => {
     const thread = await topic('Night', 'alpha')
     let t = Date.now()
-    s.send(`it is your night shift ${s.script([offer({ sleep: true, release: false }), { text: 'card shown E2E' }])}`, { thread })
+    s.send(`it is your night shift ${s.script([offer({ power: 'sleep', release: false }), { text: 'card shown E2E' }])}`, { thread })
     const card = await s.reply(/Night shift/, { thread, after: t })
     await s.reply(/card shown E2E/, { thread, after: t })
     assert.match(card.text, /Собрать сцену/)
@@ -54,7 +54,7 @@ describe('a night shift', () => {
 
     // Asked at the start, as nobody is there at the end: tidy the desktop too
     await s.tap(card, card.buttons.flat().find(b => b.data?.startsWith('nsh:tidy:'))!.data!)
-    await until('the tidy switch on', () => /Tidy the desktop: yes/.test(JSON.stringify(s.tg.sent.find(m => m.message_id === card.message_id)!.buttons)))
+    await until('the tidy switch on', () => /Open windows: close"/.test(JSON.stringify(s.tg.sent.find(m => m.message_id === card.message_id)!.buttons)))
     t = Date.now()
     await s.tap(card, card.buttons.flat().find(b => b.data?.startsWith('nsh:go:'))!.data!)
     await until('the shift begun', () => /night shift started/.test(s.tg.sent.find(m => m.message_id === card.message_id)!.text))
@@ -93,7 +93,7 @@ describe('a night shift', () => {
     const two = await topic('Game two', 'beta')
     const start = async (thread: number, name: string) => {
       const t = Date.now()
-      s.send(`night shift ${s.script([offer({ sleep: true, release: false }), { text: `${name} card E2E` }])}`, { thread })
+      s.send(`night shift ${s.script([offer({ power: 'sleep', release: false }), { text: `${name} card E2E` }])}`, { thread })
       const card = await s.reply(/Night shift/, { thread, after: t })
       await s.tap(card, card.buttons.flat().find(b => b.data?.startsWith('nsh:go:'))!.data!)
       await until('started', () => /night shift started/.test(s.tg.sent.find(m => m.message_id === card.message_id)!.text))
@@ -121,7 +121,7 @@ describe('a night shift', () => {
     const { rmSync } = await import('node:fs')
     rmSync(join(zone, 'alpha', OFF_MARK), { force: true })
     let t = Date.now()
-    s.send(`night shift ${s.script([offer({ sleep: true, release: true }), { text: 'early card E2E' }])}`, { thread })
+    s.send(`night shift ${s.script([offer({ power: 'sleep', release: true }), { text: 'early card E2E' }])}`, { thread })
     const card = await s.reply(/Night shift/, { thread, after: t })
     await s.tap(card, card.buttons.flat().find(b => b.data?.startsWith('nsh:go:'))!.data!)
     await until('started', () => /night shift started/.test(s.tg.sent.find(m => m.message_id === card.message_id)!.text))
@@ -138,7 +138,7 @@ describe('a night shift', () => {
     await sleep(2500)
     rmSync(join(zone, 'beta', OFF_MARK), { force: true })
     let t = Date.now()
-    s.send(`your night shift ${s.script([offer({ sleep: true, release: true }), { text: 'second card E2E' }])}`, { thread })
+    s.send(`your night shift ${s.script([offer({ power: 'sleep', release: true }), { text: 'second card E2E' }])}`, { thread })
     const card = await s.reply(/Night shift/, { thread, after: t })
     assert.match(card.text, /Merge and release: allowed/)
     t = Date.now()
@@ -158,7 +158,7 @@ describe('a night shift', () => {
   test('stopped by the user: the topic gets its permissions back, nothing turns off, no push', async () => {
     const thread = await topic('Night three', 'alpha')
     let t = Date.now()
-    s.send(`night shift ${s.script([offer({ sleep: true, release: false }), { text: 'third card E2E' }])}`, { thread })
+    s.send(`night shift ${s.script([offer({ power: 'sleep', release: false }), { text: 'third card E2E' }])}`, { thread })
     const card = await s.reply(/Night shift/, { thread, after: t })
     await s.tap(card, card.buttons.flat().find(b => b.data?.startsWith('nsh:go:'))!.data!)
     const started = await until('the stop button', () => s.tg.sent.find(m => m.message_id === card.message_id && m.buttons.flat().some(b => b.data?.startsWith('nsh:stop:'))))

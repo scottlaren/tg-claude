@@ -12,7 +12,7 @@ export type NightCard = {
   weekPoints?: number
   // The night ran on several profiles: each one's points instead
   byProfile?: { name: string, points: number }[]
-  sleep: boolean
+  power: 'on' | 'sleep' | 'off'
 }
 
 const clock = (t: number, zone: string) => new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: zone }).format(t)
@@ -31,7 +31,7 @@ export function nightWidgetHtml(c: NightCard) {
       ? c.byProfile.slice(0, 3).map(p => [tr(`Week, ${p.name}`, `Неделя, ${p.name}`), pct(p.points)])
       : [c.weekPoints !== undefined
         ? [tr('Week\'s limit', 'Лимит недели'), pct(c.weekPoints)]
-        : [tr('Computers', 'Компьютеры'), c.sleep ? tr('asleep', 'спят') : tr('left on', 'включены')]]),
+        : [tr('Computers', 'Компьютеры'), c.power === 'off' ? tr('turned off', 'выключены') : c.power === 'sleep' ? tr('asleep', 'спят') : tr('left on', 'включены')]]),
   ]
   const data = {
     f: c.finished.slice(0, 12), l: c.left.slice(0, 12),

@@ -551,11 +551,89 @@ test('a quiet topic kept for good: one tap on the warning, and it is never warne
   assert.equal(h.topics.get(KEY).pinned, undefined)
 })
 
+test('sleep or off is the user\'s tap on a card: Claude only offers it, and the bot does what was chosen', async () => {
+  const h = start()
+  const ran: { program?: string, args?: string[] }[] = []
+  const plain = h.gateway.request
+  h.gateway.request = (async (id: string, r: { tool: string, params: { program?: string, args?: string[] } }) => {
+    // Other commands of the bot's own (git, after a turn) are none of this
+    if (r.tool !== 'run_command' || !['shutdown', 'powershell'].includes(r.params.program ?? '')) return (plain as (...a: unknown[]) => unknown)(id, r)
+    ran.push(r.params)
+    return { ok: true, result: { exitCode: 0, stdout: 'TIDY {"closed":2,"left":[]}', stderr: '' } }
+  }) as never
+  await h.text('turn the computer off')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  const tools = (h.runs[0].o.botServers?.power as unknown as { instance: { _registeredTools: Record<string, { description: string, handler: (a: unknown) => Promise<{ content: { text: string }[] }> }> } }).instance._registeredTools
+  assert.match(tools.offer_power.description, /PC/)
+  const said = await tools.offer_power.handler({ tidy: 'force' })
+  assert.match(said.content[0].text, /chooses with a button: sleep, off, or cancel/)
+  const card = JSON.stringify(h.calls.findLast(c => /pwr:off:/.test(JSON.stringify(c.payload)))!.payload)
+  assert.match(card, /PC: sleep or off\?|PC: усыпить или выключить\?/)
+  assert.match(card, /ended by force|завершено принудительно/, 'the tidying Claude heard of is on the card')
+  const id = /pwr:off:([0-9a-f]{8})/.exec(card)![1]
+  h.runs[0].finish()
+  await turn
+  assert.equal(ran.length, 0, 'nothing is done before the tap')
+  // The windows: force, then none, then a polite close
+  await h.tap(`pwr:tidy:${id}`)
+  await h.tap(`pwr:tidy:${id}`)
+  await h.tap(`pwr:off:${id}`)
+  await until(() => ran.length === 2)
+  assert.equal(ran[0].program, 'powershell', 'the windows first')
+  assert.doesNotMatch(Buffer.from(ran[0].args!.at(-1)!, 'base64').toString('utf16le'), /Stop-Process/, 'politely, as last chosen')
+  assert.deepEqual([ran[1].program, ran[1].args], ['shutdown', ['/s', '/f', '/t', '60']])
+  assert.ok(h.calls.some(c => /turns off in a minute|выключится через минуту/.test(JSON.stringify(c.payload))))
+  // The card is spent: a second tap does nothing
+  await h.tap(`pwr:sleep:${id}`)
+  await sleep(50)
+  assert.equal(ran.length, 2)
+})
+
+test('an agent is not given the way to turn a computer off, and neither is a turn in a night shift', async () => {
+  const agent = start()
+  agent.topics.set(KEY, { mode: 'all', head: `${GROUP}:9`, workerName: 'Ads' })
+  agent.topics.set(`${GROUP}:9`, { workers: [KEY] })
+  await agent.text('go')
+  const a = agent.processQueue(KEY)
+  await until(() => agent.runs.length === 1)
+  assert.equal(agent.runs[0].o.botServers?.power, undefined)
+  agent.runs[0].finish()
+  await a
+  const night = start({ shifts: [{ id: 'aaaa0001', key: KEY, tasks: ['x'], release: true, power: 'off', state: 'running', startedAt: Date.now(), morningAt: Date.now() + 3600_000 }] })
+  await night.text('go')
+  const n = night.processQueue(KEY)
+  await until(() => night.runs.length === 1)
+  assert.equal(night.runs[0].o.botServers?.power, undefined)
+  night.runs[0].finish()
+  await n
+})
+
+test('the night shift\'s card: the computers go round on, sleep, off; the windows go round leave, close, by force', async () => {
+  const h = start({ shifts: [{ id: 'aaaa0002', key: KEY, tasks: ['x'], release: true, power: 'on', state: 'offered' }] })
+  const shown = () => JSON.stringify(h.calls.findLast(c => /nsh:pc:aaaa0002/.test(JSON.stringify(c.payload)))?.payload ?? '')
+  await h.tap('nsh:pc:aaaa0002')
+  assert.match(shown(), /Computers after it: sleep|Компьютеры после смены: усыпить/)
+  assert.match(shown(), /go to sleep when the work is done|уснут, когда работа будет готова/)
+  await h.tap('nsh:pc:aaaa0002')
+  assert.match(shown(), /Computers after it: turn off|Компьютеры после смены: выключить/)
+  assert.match(shown(), /turn off when the work is done|выключатся, когда работа будет готова/)
+  await h.tap('nsh:pc:aaaa0002')
+  assert.match(shown(), /Computers after it: leave on|Компьютеры после смены: оставить/)
+  await h.tap('nsh:tidy:aaaa0002')
+  assert.match(shown(), /Open windows: close(?! all)|Открытые окна: закрыть(?! все)/)
+  await h.tap('nsh:tidy:aaaa0002')
+  assert.match(shown(), /Open windows: close all by force|Открытые окна: закрыть все принудительно/)
+  assert.match(shown(), /ended by force: unsaved work|завершено принудительно: несохранённое/)
+  await h.tap('nsh:tidy:aaaa0002')
+  assert.match(shown(), /Open windows: leave|Открытые окна: не трогать/)
+})
+
 test('a night shift that runs into a limit goes on by itself on the emptiest other profile; one spent too is skipped', async () => {
   const carried: string[] = []
   const soon = Date.now() / 1000 + 3600
   const h = start({
-    shifts: [{ id: 'aaaa0001', key: KEY, tasks: ['x'], release: true, sleep: false, state: 'running', startedAt: Date.now(), morningAt: Date.now() + 3600_000 }],
+    shifts: [{ id: 'aaaa0001', key: KEY, tasks: ['x'], release: true, power: 'on', state: 'running', startedAt: Date.now(), morningAt: Date.now() + 3600_000 }],
     profiles: {
       list: () => ['main', 'spent', 'full', 'work'],
       nameOf: (n?: string) => n ?? 'main',
@@ -586,7 +664,7 @@ test('paid extra usage after the limit: a night shift stops and goes on on anoth
   for (const night of [true, false]) {
     const carried: string[] = []
     const h = start({
-      ...(night && { shifts: [{ id: 'aaaa0001', key: KEY, tasks: ['x'], release: true, sleep: false, state: 'running', startedAt: Date.now(), morningAt: Date.now() + 3600_000 }] }),
+      ...(night && { shifts: [{ id: 'aaaa0001', key: KEY, tasks: ['x'], release: true, power: 'on', state: 'running', startedAt: Date.now(), morningAt: Date.now() + 3600_000 }] }),
       profiles: {
         list: () => ['main', 'work'],
         nameOf: (n?: string) => n ?? 'main',
@@ -646,6 +724,8 @@ test('by day too a spent limit moves the topic to a profile with room; it goes h
   assert.ok(h.said().some(s => /I go on on <b>work<\/b>|продолжаю на <b>work<\/b>/.test(s)), h.said().join(' | '))
   assert.ok(!h.said().some(s => /limit of the profile|Лимит профиля/.test(s)), 'no pause')
   assert.ok(!JSON.stringify(h.calls).includes('pfr:'), 'no button to tap')
+  assert.ok(!h.said().some(s => /Queued|В очереди/.test(s)), 'no word about a queue: it is the same task')
+  assert.ok(!JSON.stringify(h.calls.filter(c => c.method === 'setMessageReaction')).includes('💔'), 'and no mark of a failure')
   // The same message goes again, now on work
   await until(() => h.runs.length === 2)
   assert.match(String(h.runs[1].o.prompt), /build the level/)
@@ -678,6 +758,28 @@ test('by day too a spent limit moves the topic to a profile with room; it goes h
   assert.equal(h.topics.get(KEY).profileBack, undefined)
   assert.deepEqual(carried, ['main>work', 'work>main'])
   assert.ok(h.said().some(s => /has reset: this topic is back on it|сбросился: топик снова на нём/.test(s)), h.said().join(' | '))
+})
+
+test('an agent that moves to another profile at a limit tells its head nothing: the report comes when the work is done', async () => {
+  const h = start({
+    profiles: {
+      list: () => ['main', 'work'],
+      nameOf: (n?: string) => n ?? 'main',
+      lastLimit: (n: string) => (n === 'main' ? { status: 'rejected', resetsAt: Date.now() / 1000 + 3600, at: Date.now() } : undefined),
+      carry: () => true,
+    },
+  })
+  h.topics.set(KEY, { mode: 'all', head: `${GROUP}:9`, workerName: 'Ads' })
+  h.topics.set(`${GROUP}:9`, { workers: [KEY] })
+  await h.text('count them')
+  h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  h.runs[0].finish({ text: '', isError: true, errorKind: 'rate_limit' } as never)
+  await until(() => h.runs.length === 2)
+  assert.equal(h.topics.get(KEY).profile, 'work')
+  assert.ok(!h.said().some(s => /Report from agent|ran into the limit/.test(s)), h.said().join(' | '))
+  h.runs[1].finish({ text: 'counted' })
+  await until(() => h.said().some(s => /Report from agent/.test(s)))
 })
 
 test('a spent limit with no profile with room waits for the reset and offers the others', async () => {
@@ -793,6 +895,96 @@ test('Chrome on another computer: a short session on that computer\'s profile do
   await turn
 })
 
+test('Chrome whose account has spent its limit and no other Chrome to go to: no session is started, and Claude is told when it resets', async () => {
+  const reset = Math.round(Date.now() / 1000) + 3600
+  const h = start({
+    elsewhere: true,
+    profiles: {
+      list: () => ['main', 'work'],
+      nameOf: (n?: string) => n ?? 'main',
+      lastLimit: (n: string) => (n === 'work' ? { status: 'rejected', resetsAt: reset, at: Date.now() } : undefined),
+    },
+  })
+  h.registry.setProfile('mac', 'work')
+  await h.text('look at the dashboard on the mac')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  const tools = (h.runs[0].o.botServers?.browser_elsewhere as unknown as { instance: { _registeredTools: Record<string, { handler: (a: unknown) => Promise<{ content: { text: string }[] }> }> } }).instance._registeredTools
+  const r = await tools.browse_on_computer.handler({ computer: 'Mac', task: 'open the dashboard' })
+  assert.match(r.content[0].text, /^Nothing was done: .*has spent its limit: Mac \(profile work, until /)
+  assert.ok(r.content[0].text.includes(new Date(reset * 1000).toISOString()))
+  assert.match(r.content[0].text, /Don't try a browser again in this turn/)
+  assert.equal(h.runs.length, 1, 'no session on the spent account')
+  h.runs[0].finish()
+  await turn
+})
+
+test('Chrome whose account has spent its limit: the errand goes to another computer\'s Chrome by itself, and the answer says so', async () => {
+  const reset = Math.round(Date.now() / 1000) + 3600
+  const h = start({
+    chrome: true,
+    elsewhere: true,
+    profiles: {
+      list: () => ['main', 'work'],
+      nameOf: (n?: string) => n ?? 'main',
+      env: (n?: string) => ({ CLAUDE_CONFIG_DIR: n ?? 'main' }),
+      lastLimit: (n: string) => (n === 'main' ? { status: 'rejected', resetsAt: reset, at: Date.now() } : undefined),
+    },
+  })
+  h.registry.setProfile('pc', 'main')
+  h.registry.setProfile('mac', 'work')
+  // As after the move at the limit: the topic is on work, its own Chrome is signed in to main
+  h.topics.set(KEY, { profile: 'work', profileOwn: true, browser: true })
+  await h.text('look at the dashboard')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  const tools = (h.runs[0].o.botServers?.browser_elsewhere as unknown as { instance: { _registeredTools: Record<string, { description: string, handler: (a: unknown) => Promise<{ content: { text: string }[] }> }> } }).instance._registeredTools
+  assert.match(tools.browse_on_computer.description, /goes to another computer's Chrome by itself/)
+  const call = tools.browse_on_computer.handler({ computer: 'PC', task: 'open the dashboard, read the revenue' })
+  await until(() => h.runs.length === 2)
+  assert.equal(h.runs[1].o.env.CLAUDE_CONFIG_DIR, 'work', 'the Mac\'s account: it has room')
+  assert.match(h.runs[1].o.append, /deviceId mac-chrome/)
+  h.runs[1].finish({ text: 'Revenue is 42.' })
+  const said = (await call).content[0].text
+  assert.match(said, /^\[From Chrome on Mac, profile work\. Done here instead of PC \(profile main, until [^)]+\), at the limit of its Claude account: the sign-ins in this Chrome may differ\]\nRevenue is 42\./)
+  assert.equal(h.runs.length, 2, 'no session on the spent account')
+  h.runs[0].finish()
+  await turn
+})
+
+test('a topic working in Chrome moves at a spent limit only when another computer\'s Chrome can take its browser work', async () => {
+  for (const mac of [true, false]) {
+    const h = start({
+      chrome: true,
+      elsewhere: mac,
+      profiles: {
+        list: () => ['main', 'work'],
+        nameOf: (n?: string) => n ?? 'main',
+        lastLimit: (n: string) => (n === 'main' ? { status: 'rejected', resetsAt: Date.now() / 1000 + 3600, at: Date.now() } : undefined),
+        carry: () => true,
+      },
+    })
+    h.registry.setProfile('pc', 'main')
+    if (mac) h.registry.setProfile('mac', 'work')
+    h.topics.set(KEY, { browser: true })
+    await h.text('check the ads')
+    h.processQueue(KEY)
+    await until(() => h.runs.length === 1)
+    h.runs[0].finish({ text: '', isError: true, errorKind: 'rate_limit' } as never)
+    if (mac) {
+      await until(() => h.runs.length === 2)
+      assert.equal(h.topics.get(KEY).profile, 'work')
+      assert.ok(h.said().some(s => /the browser work goes to Chrome on <b>Mac<\/b>|работа в браузере идёт через Chrome на <b>Mac<\/b>/.test(s)), h.said().join(' | '))
+      h.runs[1].finish()
+      await until(() => !h.liveOf(KEY).busy)
+    } else {
+      await until(() => h.said().some(s => /limit of the profile|Лимит профиля/.test(s)))
+      assert.equal(h.topics.get(KEY).profile, undefined, 'it waits where its Chrome is')
+      assert.equal(h.runs.length, 1)
+    }
+  }
+})
+
 test('this computer\'s Chrome on another account than the topic\'s: not attached to the session, reached by an errand on that account', async () => {
   const h = start({
     chrome: true,
@@ -824,7 +1016,7 @@ test('a night shift asks nobody how Chrome goes online: a Mac\'s goes through th
   for (const mac of [{ relaunch: true, allowed: true }, { relaunch: false, allowed: false }]) {
     const h = start({
       elsewhere: true,
-      shifts: [{ id: 'aaaa0001', key: KEY, tasks: ['x'], release: true, sleep: false, state: 'running', startedAt: Date.now(), morningAt: Date.now() + 3600_000 }],
+      shifts: [{ id: 'aaaa0001', key: KEY, tasks: ['x'], release: true, power: 'on', state: 'running', startedAt: Date.now(), morningAt: Date.now() + 3600_000 }],
       profiles: { list: () => ['main', 'work'], nameOf: (n?: string) => n ?? 'main' },
     })
     h.registry.setProfile('mac', 'work')

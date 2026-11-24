@@ -5,8 +5,17 @@ import { tr } from '../i18n.ts'
 import type { Mode } from '../store.ts'
 
 // A night shift: the user gives a head topic its tasks for the night and goes to sleep. The head works with no one to
-// ask, its agents too; the user reads one summary in the morning, and the computers that did the work go to sleep when
-// it is done (never off: only a sleeping computer can be woken from afar). One per topic; on disk, so a restart in the night changes nothing
+// ask, its agents too; the user reads one summary in the morning, and the computers that did the work stay on, go to
+// sleep or turn off when it is done, as the user chose on the card. One per topic; on disk, so a restart in the night
+// changes nothing
+
+// on: left as they are. sleep: can be woken from afar where waking works. off: turned on at the computer or by a smart plug
+export type ShiftPower = 'on' | 'sleep' | 'off'
+// soft: each app is asked to close, one asking to save stays. force: what stayed open is ended, unsaved work lost
+export type ShiftTidy = 'soft' | 'force'
+// The stronger of two wishes for one computer, when two shifts leave it to the last
+export const strongerPower = (a?: 'sleep' | 'off', b?: 'sleep' | 'off') => (a === 'off' || b === 'off' ? 'off' as const : a ?? b)
+export const strongerTidy = (a?: ShiftTidy, b?: ShiftTidy) => (a === 'force' || b === 'force' ? 'force' as const : a ?? b)
 
 export type Shift = {
   id: string
@@ -14,10 +23,10 @@ export type Shift = {
   tasks: string[]
   // Merging and releasing are allowed, when tests are green and the review accepted it. Off: own branches only
   release: boolean
-  // Put the computers to sleep when it ends
-  sleep: boolean
+  // What becomes of the computers when it ends
+  power: ShiftPower
   // Close the open windows first, for an empty desktop in the morning
-  tidy?: boolean
+  tidy?: ShiftTidy
   state: 'offered' | 'running' | 'ended'
   startedAt?: number
   // The morning push, in the user's time zone
@@ -44,10 +53,10 @@ export type Shift = {
   endedAt?: number
   done?: boolean
   pinged?: boolean
-  // Computers another shift asked to put to sleep, or to tidy, while this one still worked on them: the last to finish
-  // does it
-  offAfter?: string[]
-  tidyAfter?: string[]
+  // Computers another shift asked to put to sleep or turn off, or to tidy, while this one still worked on them: the
+  // last to finish does it
+  restAfter?: Record<string, 'sleep' | 'off'>
+  tidyAfter?: Record<string, ShiftTidy>
   // A push was refused, and the user was offered to allow merging and releasing: once a shift
   releaseOffered?: boolean
 }
@@ -63,8 +72,16 @@ export const wrapAfter = (t: number, zone: string) => nextRun(WRAP, t, zone) ?? 
 export function createShifts(file: string, now = Date.now) {
   let list: Shift[] = []
   try {
-    // Shifts saved before 0.17.2 said shutdown: they sleep now
-    list = (JSON.parse(readFileSync(file, 'utf8')) as (Shift & { shutdown?: boolean })[]).map(({ shutdown, ...s }) => ({ ...s, sleep: s.sleep ?? !!shutdown }))
+    // Shifts saved before this choice said sleep (and before 0.17.2 shutdown, which slept), tidy as a yes, and listed
+    // the computers left to them by name alone
+    type Saved = Omit<Shift, 'power' | 'tidy' | 'tidyAfter'> & { power?: ShiftPower, sleep?: boolean, shutdown?: boolean, tidy?: boolean | ShiftTidy, offAfter?: string[], tidyAfter?: string[] | Record<string, ShiftTidy> }
+    list = (JSON.parse(readFileSync(file, 'utf8')) as Saved[]).map(({ sleep, shutdown, offAfter, tidy, tidyAfter, ...s }) => ({
+      ...s,
+      power: s.power ?? (sleep || shutdown ? 'sleep' : 'on'),
+      ...(tidy && { tidy: tidy === true ? 'soft' as const : tidy }),
+      ...((s.restAfter || offAfter?.length) && { restAfter: s.restAfter ?? Object.fromEntries(offAfter!.map(id => [id, 'sleep' as const])) }),
+      ...(tidyAfter && { tidyAfter: Array.isArray(tidyAfter) ? Object.fromEntries(tidyAfter.map(id => [id, 'soft' as const])) : tidyAfter }),
+    }))
   } catch {}
   const save = () => {
     // Ended ones are kept until their morning push has gone, then a day more
@@ -80,7 +97,7 @@ export function createShifts(file: string, now = Date.now) {
     return s
   }
   return {
-    offer(key: string, o: Pick<Shift, 'tasks' | 'release' | 'sleep' | 'tidy'>) {
+    offer(key: string, o: Pick<Shift, 'tasks' | 'release' | 'power' | 'tidy'>) {
       // An offer not taken is replaced by the next one
       list = list.filter(s => !(s.key === key && s.state === 'offered'))
       const s: Shift = { id: randomBytes(4).toString('hex'), key, state: 'offered', ...o }
@@ -110,8 +127,12 @@ export function shiftCard(s: Shift, escape: (t: string) => string) {
       `- ${tr('Everything without questions, helpers allowed', 'Всё без вопросов, помощники разрешены')}`,
       `- ${s.release ? tr('Merge and release: allowed, with green tests and an accepted review', 'Мёрж и выпуск: разрешены, при зелёных тестах и принятой проверке') : tr('Own branches only: nothing merged or released', 'Только свои ветки: ничего не мёржится и не выпускается')}`,
       `- ${tr(`At ${WRAP_LABEL} it wraps up: nothing long is started after that`, `В ${WRAP_LABEL} смена сворачивается: долгого после этого не начинает`)}`,
-      `- ${s.tidy ? tr('Before that the open windows close: apps asking to save stay open', 'Перед этим открытые окна закроются: программы, которые просят сохранить, останутся') : tr('Open windows stay as they are', 'Открытые окна останутся как есть')}`,
-      `- ${s.sleep ? tr('The computers go to sleep when the work is done: open apps stay as they are, and they can be woken from afar', 'Компьютеры уснут, когда работа будет готова: открытые программы останутся как есть, разбудить можно издалека') : tr('The computers stay on', 'Компьютеры останутся включены')}`,
+      `- ${s.tidy === 'force'
+        ? tr('Before that the open windows close, and what stays open is ended by force: unsaved work in those apps is lost', 'Перед этим открытые окна закроются, а что не закрылось, будет завершено принудительно: несохранённое в этих программах пропадёт')
+        : s.tidy ? tr('Before that the open windows close: apps asking to save stay open', 'Перед этим открытые окна закроются: программы, которые просят сохранить, останутся') : tr('Open windows stay as they are', 'Открытые окна останутся как есть')}`,
+      `- ${s.power === 'off'
+        ? tr('The computers turn off when the work is done: everything open closes, unsaved work is lost. They are turned on at the computer or by a smart plug', 'Компьютеры выключатся, когда работа будет готова: всё открытое закроется, несохранённое пропадёт. Включить можно на месте или умной розеткой')
+        : s.power === 'sleep' ? tr('The computers go to sleep when the work is done: open apps stay as they are', 'Компьютеры уснут, когда работа будет готова: открытые программы останутся как есть') : tr('The computers stay on', 'Компьютеры останутся включены')}`,
       `- ${tr('The summary comes as soon as it is done, quietly; a push at 9:00', 'Сводка придёт сразу, как будет готово, без звука; пуш в 9:00')}`,
     ].join('\n'),
   ].join('\n\n')
@@ -144,7 +165,7 @@ ${s.release ? '- Merging and releasing are allowed, by the project\'s own rules,
 - At ${WRAP_LABEL} (the user's clock) you are told to wrap up: from then on start nothing long, finish what is quick, commit and push what is ready, end the shift and write the summary.
 - When everything is done: call end_night_shift with done=true and its lists, finished and left, a few words per item (the user's morning card shows them), then write the summary as your final answer, in the user's language: done, released or left in branches, your decisions with their reasons, what you noticed but didn't touch, what isn't done. Put the main pictures in it as ![caption](path), before and after for visual work.
 - If you are told it is morning before you are done: stop starting new work, call end_night_shift with done=false and write the summary the same way, saying plainly what is left.
-- Never put a computer to sleep, turn it off or restart it yourself: the bot puts it to sleep after your summary, when the user asked for it. Before you end the shift, save what is open (the After Effects project, the Roblox Studio place) through their tools and commit your work.`
+- Never put a computer to sleep, turn it off or restart it yourself: after your summary the bot does what the user chose on the shift's card (leave it on, sleep, or off). Before you end the shift, save what is open (the After Effects project, the Roblox Studio place) through their tools and commit your work.`
 
 // What an agent of a head on a night shift works by
 export const agentShiftRule = `

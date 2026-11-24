@@ -50,6 +50,7 @@ export type ServerConfig = {
   shiftTickMs?: number
   shiftQuietMs?: number
   shiftSleep?: { program: string, args: string[] }
+  shiftOff?: { program: string, args: string[] }
   shiftTidy?: { program: string, args: string[] }
   // For tests: the morning this long after the start, instead of 9:00 in the user's time zone
   shiftMorningInMs?: number

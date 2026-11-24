@@ -63,5 +63,5 @@ test('a program with its arguments is read the same way', () => {
   assert.equal(powerRefusal({ program: 'shutdown', args: ['/s', '/t', '0'] }), 'shutdown')
   assert.equal(powerRefusal({ program: 'powershell', args: ['-Command', 'Stop-Computer'] }), 'stop-computer')
   assert.equal(powerRefusal({ program: 'sh', args: ['-c', 'nohup sh -c "sleep 60; pmset sleepnow" >/dev/null 2>&1 &'] }), null)
-  assert.match(powerDeny('shutdown'), /not allowed \(shutdown\).*sleep/)
+  assert.match(powerDeny('shutdown'), /not allowed \(shutdown\).*offer_power.*sleep or off/)
 })

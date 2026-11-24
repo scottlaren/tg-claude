@@ -28,6 +28,29 @@ test('the answer is read even behind PowerShell\'s progress records, and one win
   assert.equal(parseTidy('TIDY {broken'), null)
 })
 
+test('by force: what a polite close left open is ended, the system\'s own windows aside; none of that is in the polite script', () => {
+  const ps = (c: { args: string[] }) => Buffer.from(c.args.at(-1)!, 'base64').toString('utf16le')
+  const polite = ps(tidyCommand('windows')!)
+  assert.doesNotMatch(polite, /Stop-Process|__KILL__|__WAIT__/)
+  assert.match(polite, /Start-Sleep -Seconds 20/)
+  const force = ps(tidyCommand('windows', false, true)!)
+  assert.match(force, /Stop-Process -Id \$id -Force/)
+  assert.match(force, /\$system = 'explorer'/, 'never the shell')
+  assert.match(force, /Start-Sleep -Seconds 8/, 'a shorter wait: what asks to save is ended anyway')
+  assert.doesNotMatch(force, /__KILL__|__WAIT__/)
+  const mac = tidyCommand('macos', false, true)!.args[3]
+  assert.match(mac, /a\.forceTerminate/)
+  assert.doesNotMatch(mac, /__KILL__|__WAIT__/)
+  assert.doesNotMatch(tidyCommand('macos')!.args[3], /forceTerminate|__KILL__|__WAIT__/)
+  // A dry run lists and ends nothing, whatever else is asked
+  assert.match(ps(tidyCommand('windows', true, true)!), /\$dry = \$true/)
+  assert.deepEqual(parseTidy('TIDY {"closed":6,"left":[],"killed":["RobloxStudioBeta","RobloxStudioBeta","AfterFX"]}'), { closed: 6, left: [], killed: ['RobloxStudioBeta', 'RobloxStudioBeta', 'AfterFX'] })
+  assert.deepEqual(parseTidy('TIDY {"closed":2,"left":[],"killed":[]}'), { closed: 2, left: [] })
+  assert.equal(tidyLine('PC', { closed: 6, left: [], killed: ['RobloxStudioBeta', 'RobloxStudioBeta', 'AfterFX'] }, esc),
+    '🧹 <b>PC</b> убран: 6 окон закрыто. Закрыты принудительно, несохранённое в них пропало: RobloxStudioBeta ×2, AfterFX. Рабочий стол пустой.')
+  assert.match(tidyLine('PC', { closed: 1, left: [{ app: 'explorer', title: 'Docs' }], killed: ['Notepad'] }, esc), /Notepad\. Остались открыты: explorer\.$/)
+})
+
 test('the line says what closed and what waits to be saved', () => {
   assert.equal(tidyLine('PC', { closed: 14, left: [] }, esc), '🧹 <b>PC</b> убран: 14 окон закрыто, рабочий стол пустой.')
   assert.match(tidyLine('PC', { closed: 1, left: [{ app: 'AfterFX', title: 'a' }, { app: 'AfterFX', title: 'b' }, { app: '', title: 'Без имени — Блокнот' }] }, esc),

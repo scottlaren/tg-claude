@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setLang } from '../src/i18n.ts'
-import { createShifts, morningAfter, shiftCard, shiftRule, morningPing } from '../src/telegram/night-shift.ts'
+import { createShifts, morningAfter, shiftCard, shiftRule, morningPing, strongerPower, strongerTidy } from '../src/telegram/night-shift.ts'
 
 setLang('ru')
 
@@ -14,7 +14,7 @@ function stand() {
   const make = () => createShifts(join(dir, 'shifts.json'), () => t)
   return { make, at: (x: number) => { t = x }, done: () => rmSync(dir, { recursive: true, force: true }) }
 }
-const tasks = { tasks: ['Собрать сцену', 'Проверить цены'], sleep: true, release: false }
+const tasks = { tasks: ['Собрать сцену', 'Проверить цены'], power: 'sleep' as const, release: false }
 
 test('the morning is the next 9:00 in the user\'s time zone', () => {
   const evening = Date.UTC(2026, 10, 2, 19, 0) // 23:00 at UTC+4
@@ -67,23 +67,41 @@ test('a computer another shift asked to turn off is kept with the shift record',
     const shifts = s.make()
     const a = shifts.offer('1:2', tasks)
     shifts.start(a.id, { morningAt: 1, before: { night: false } })
-    shifts.change(a.id, { offAfter: ['pc'] })
-    assert.deepEqual(s.make().running('1:2')?.offAfter, ['pc'])
+    shifts.change(a.id, { restAfter: { pc: 'off' }, tidyAfter: { pc: 'force' } })
+    assert.deepEqual(s.make().running('1:2')?.restAfter, { pc: 'off' })
+    assert.deepEqual(s.make().running('1:2')?.tidyAfter, { pc: 'force' })
   } finally {
     s.done()
   }
 })
 
-test('a shift saved before sleep existed, with shutdown, sleeps; tidying is said on the card', () => {
+test('shifts saved before the choice of sleep or off keep what they meant; the card says each choice', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tgcv-shift-old-'))
   try {
     const file = join(dir, 'shifts.json')
     writeFileSync(file, JSON.stringify([{ id: 'aaaa0001', key: '1:2', tasks: ['x'], release: false, shutdown: true, state: 'running' }]))
     const s = createShifts(file).running('1:2')!
-    assert.equal(s.sleep, true)
+    assert.equal(s.power, 'sleep', 'shutdown slept from 0.17.2 on')
     assert.ok(!('shutdown' in s))
-    assert.match(shiftCard({ ...s, tidy: true }, t => t), /открытые окна закроются/)
-    assert.match(shiftCard({ ...s, tidy: false }, t => t), /Открытые окна останутся как есть/)
+    // 0.17.2 to 0.18.2: sleep and tidy as yes or no, computers left to the last shift by name
+    writeFileSync(file, JSON.stringify([
+      { id: 'aaaa0002', key: '1:3', tasks: ['x'], release: false, sleep: true, tidy: true, offAfter: ['pc'], tidyAfter: ['mac'], state: 'running' },
+      { id: 'aaaa0003', key: '1:4', tasks: ['x'], release: false, sleep: false, state: 'running' },
+    ]))
+    const old = createShifts(file)
+    assert.deepEqual([old.running('1:3')!.power, old.running('1:3')!.tidy, old.running('1:3')!.restAfter, old.running('1:3')!.tidyAfter], ['sleep', 'soft', { pc: 'sleep' }, { mac: 'soft' }])
+    assert.ok(!('sleep' in old.running('1:3')!) && !('offAfter' in old.running('1:3')!))
+    assert.deepEqual([old.running('1:4')!.power, old.running('1:4')!.tidy], ['on', undefined])
+    assert.match(shiftCard({ ...s, tidy: 'soft' }, t => t), /открытые окна закроются: программы, которые просят сохранить, останутся/)
+    assert.match(shiftCard({ ...s, tidy: 'force' }, t => t), /будет завершено принудительно: несохранённое в этих программах пропадёт/)
+    assert.match(shiftCard({ ...s, tidy: undefined }, t => t), /Открытые окна останутся как есть/)
+    assert.match(shiftCard({ ...s, power: 'sleep' }, t => t), /Компьютеры уснут/)
+    assert.match(shiftCard({ ...s, power: 'off' }, t => t), /Компьютеры выключатся.*умной розеткой/)
+    assert.match(shiftCard({ ...s, power: 'on' }, t => t), /Компьютеры останутся включены/)
+    assert.equal(strongerPower('sleep', 'off'), 'off')
+    assert.equal(strongerPower(undefined, 'sleep'), 'sleep')
+    assert.equal(strongerTidy('force', 'soft'), 'force')
+    assert.equal(strongerTidy(undefined, undefined), undefined)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

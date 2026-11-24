@@ -131,6 +131,7 @@ test('a turn leaves a reaction only when it failed', () => {
   assert.equal(turnReaction({ note: null }), null)
   assert.equal(turnReaction({ note: '⏹ Stopped', stopped: true }), null, 'the user stopped it themselves')
   assert.equal(turnReaction({ note: '⚠️ failed' }), '💔')
+  assert.equal(turnReaction({ note: '🔀 on work', moved: true }), null, 'moved to another profile: it goes on')
 })
 
 test('the first message of a topic is not a reply, whatever Telegram marks', () => {

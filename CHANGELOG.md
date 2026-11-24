@@ -2,6 +2,22 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## Unreleased
+
+- **The offer to move a cloud project comes once a day.** “The computer is online. Move the project from the cloud there?” used to return every 12 hours for each topic, and after every server update. Now each computer asks once a day at most, and an update doesn't start it again.
+- **A move to another profile is quiet.** A task that moved on at a spent limit left 💔 on its message and a line about a queue, and an agent's head got an empty report that could cancel the agents waiting for it. Now there is one line saying where the task goes on, and a scheduled run stays a scheduled run.
+- **Browser work finds another Chrome.** A Chrome works only through the Claude account it is signed in to. When that account's limit is spent, the work now goes by itself to the Chrome of another connected computer whose account has room, and the answer says where it was done; that Chrome's own sign-ins to sites may differ. A topic working in Chrome moves to another profile at a spent limit too, when there is such a Chrome. With none, Claude hears at once when the limit resets instead of starting a session that fails.
+- **Sleep or off, your choice.** Turning a computer off is back, next to sleep. A night shift's card says what becomes of the computers after it: left on, sleep, or off. Ask Claude to turn a computer off or put it to sleep, and it shows a card with both; the bot does it a minute after your tap. Claude still can't do either with a command of its own.
+- **Tidying by force.** Closing the open windows now has three settings: leave them, close them, or close everything by force. By force, an app that stays open asking to save is ended, and its unsaved work is lost; the bot names what it ended.
+
+### Русский
+
+- **Предложение перенести проект из облака приходит раз в сутки.** «Компьютер в сети. Перенести проект из облака туда?» возвращалось каждые 12 часов для каждого топика и после каждого обновления сервера. Теперь от каждого компьютера не чаще раза в сутки, и обновление его не возвращает.
+- **Переход на другой профиль проходит тихо.** Задача, которая перешла на другой профиль из-за лимита, оставляла 💔 на своём сообщении и строку про очередь, а хед агента получал пустой отчёт, который мог отменить ждущих его агентов. Теперь остаётся одна строка о том, где задача продолжается, а запуск по расписанию остаётся запуском по расписанию.
+- **Работа в браузере находит другой Chrome.** Chrome работает только через аккаунт Claude, в который он вошёл. Когда лимит этого аккаунта исчерпан, работа сама уходит в Chrome другого подключённого компьютера, у аккаунта которого лимит свободен, и в ответе сказано, где она сделана; входы на сайты в том Chrome могут быть другими. Топик, работающий в Chrome, при исчерпанном лимите тоже переходит на другой профиль, если такой Chrome есть. Если его нет, Claude сразу узнаёт, когда сбросится лимит, вместо запуска сессии, которая упадёт.
+- **Сон или выключение, на твой выбор.** Выключение компьютера вернулось, рядом со сном. В карточке ночной смены выбирается, что будет с компьютерами после неё: оставить, усыпить или выключить. Попроси Claude выключить или усыпить компьютер, и он покажет карточку с обоими вариантами; бот выполнит через минуту после твоего нажатия. Сам Claude по-прежнему не может сделать ни то ни другое своей командой.
+- **Принудительная уборка.** У закрытия открытых окон теперь три положения: не трогать, закрыть, закрыть всё принудительно. В принудительном программа, которая осталась открытой и просит сохранить, завершается, несохранённое в ней пропадает; бот называет, что он завершил.
+
 ## 0.18.2
 
 - **The head links its agents right away.** In 0.18.1 the head learned an agent's link only from that agent's next report, so in its own answers the names stayed plain text until then. Now it knows the way to each of its agents at every turn.

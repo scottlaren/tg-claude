@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sleepCommand } from '../src/telegram/sleep.ts'
+import { sleepCommand, offCommand, powerCommand } from '../src/telegram/sleep.ts'
 
 const script = (args: string[]) => {
   const inner = /'-EncodedCommand','([A-Za-z0-9+/=]+)'/.exec(args.at(-1)!)
@@ -21,6 +21,14 @@ test('Windows sleeps from a process of its own, a minute later, with the shutdow
   const dry = script(sleepCommand('windows', true)!.args)
   assert.match(dry, /\[Nap\]::Go\(\$true\)/)
   assert.doesNotMatch(dry, /Start-Sleep 60/)
+})
+
+test('off, when the user chose it: a minute later too, closing what is open; sleep stays what it was', () => {
+  assert.deepEqual(offCommand('windows'), { program: 'shutdown', args: ['/s', '/f', '/t', '60'] })
+  assert.match(offCommand('macos')!.args[1], /sleep 60; osascript -e 'tell application \\"System Events\\" to shut down'/)
+  assert.match(offCommand('linux')!.args[1], /sleep 60; systemctl poweroff/)
+  assert.deepEqual(powerCommand('windows', 'off'), offCommand('windows'))
+  assert.deepEqual(powerCommand('linux', 'sleep'), sleepCommand('linux'))
 })
 
 test('a Mac and Linux sleep too, a minute later, in the background', () => {

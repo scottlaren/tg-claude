@@ -15,7 +15,7 @@ export function createErrandServer(computers: string[], run: (p: Errand) => Prom
     name: ERRAND_SERVER,
     tools: [tool(
       'browse_on_computer',
-      `Do something in Chrome on one of the user's computers whose Chrome this session can't reach (${computers.join(', ')}): another computer, or this one when its Chrome is signed in to another Claude account. A separate short Claude session on that Chrome's account does the task there, with its sign-ins, and answers with what it found and screenshots. For when the user asks for Chrome and this topic has none of its own, asks to look on that computer, or a site is signed in to only there; this topic's own Chrome, when on, comes first. It sees nothing of this conversation: give a self-contained task (where to go, what to find or do, what to bring back).`,
+      `Do something in Chrome on one of the user's computers whose Chrome this session can't reach (${computers.join(', ')}): another computer, or this one when its Chrome is signed in to another Claude account. A separate short Claude session on that Chrome's account does the task there, with its sign-ins, and answers with what it found and screenshots. For when the user asks for Chrome and this topic has none of its own, asks to look on that computer, or a site is signed in to only there; this topic's own Chrome, when on, comes first. It sees nothing of this conversation: give a self-contained task (where to go, what to find or do, what to bring back). When the Claude account that Chrome is signed in to has spent its limit, the errand goes to another computer's Chrome by itself, and the answer says where it was done.`,
       {
         computer: z.enum(computers as [string, ...string[]]),
         task: z.string().min(1).max(4000),

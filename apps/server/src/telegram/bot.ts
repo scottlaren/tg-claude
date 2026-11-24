@@ -82,7 +82,8 @@ import { createChecklistServer, livePlan, finalPlan, CHECKLIST_SERVER, SET_CHECK
 import { toolResultImage, imageMime } from '../claude/tool-results.ts'
 import { stageUploads } from '../claude/browser-upload.ts'
 import { createShiftServer, SHIFT_SERVER, isShiftTool } from '../claude/shift-tools.ts'
-import { createShifts, morningAfter, wrapAfter, shiftCard, startedLine, morningPing, shiftRule, agentShiftRule, type Shift } from './night-shift.ts'
+import { createShifts, morningAfter, wrapAfter, shiftCard, startedLine, morningPing, shiftRule, agentShiftRule, strongerPower, strongerTidy, type Shift, type ShiftPower, type ShiftTidy } from './night-shift.ts'
+import { createPowerServer, POWER_SERVER, POWER_TOOL, type PowerOffer } from '../claude/power-tools.ts'
 import { createStuckWatch, failureOf, stuckForClaude, type StuckReason } from './stuck.ts'
 import { createPauses, resumePrompt, untilOf, MAX_LIMIT_ATTEMPTS, type Pause } from './limit-pause.ts'
 import { createDecisionStore } from '../decisions.ts'
@@ -90,7 +91,7 @@ import { createNightStore } from '../night.ts'
 import { RECORD_DECISION, DECISION_SERVER } from '../claude/decision-tools.ts'
 import { NIGHT_RULE, nightDeny, nightRefusal, powerDeny, powerRefusal } from '../claude/night-guard.ts'
 import { tidyCommand, parseTidy, tidyLine } from './tidy.ts'
-import { sleepCommand } from './sleep.ts'
+import { sleepCommand, offCommand, type PowerHow } from './sleep.ts'
 import { inherited, type WorkspaceStore } from '../workspaces.ts'
 import { createZonesMenu } from './zones.ts'
 import { compactView, compactingText, compactedText, shouldOffer, AGENT_WINDOW, TOPIC_WINDOW } from './compact.ts'
@@ -99,6 +100,7 @@ import { createHandIn, handInNote, justHandedIn, ownWords, HAND_IN } from './han
 import { createFolderRetry, isBusyFolder, rmdirCommand } from './busy-folder.ts'
 import { createSpend } from './spend.ts'
 import { createOffers, createOverview, topicWay, botUserOf } from './overview.ts'
+import { createMoveOffers } from './move-offers.ts'
 import { createPresence } from './presence.ts'
 import { createContextTrust, heldBackBlock, heldBackPreview, textHash } from './context-trust.ts'
 import { createRuleServer, withRule, RULE_SERVER, SUGGEST_RULE } from '../claude/rule-tools.ts'
@@ -300,7 +302,8 @@ type Prepared = { text: string, images?: PromptImage[], plain?: string, shownId?
 
 // How a turn ended, for a worker's report to its head
 // paused: the limit stopped it and it goes on by itself, so a head has nothing to hear yet
-type TurnOutcome = { text: string, note?: string | null, stopped?: boolean, paused?: boolean }
+// paused: the task is not over, it goes on later. moved: it goes on at once, on another profile
+type TurnOutcome = { text: string, note?: string | null, stopped?: boolean, paused?: boolean, moved?: boolean }
 // The project a picture in a message is fetched through
 type MediaOp = { deviceId: string, projectId: string, bindingVersion: number }
 
@@ -1603,15 +1606,23 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     ), { ...where(topicId), ...HTML, disable_notification: true }).catch(() => {}))
   }
 
+  // A profile whose limit is spent, until when if it said: nothing runs on it before that
+  const limitSpent = (name: string) => {
+    const last = profiles.lastLimit(name)
+    const reset = epochMs(last?.resetsAt)
+    return last?.status === 'rejected' && (!reset || reset > Date.now()) ? { reset } : undefined
+  }
+  // Computers other than this one whose Chrome is signed in to an account with room: where browser work can go when a
+  // topic's own account is spent. A Chrome works only through the account it is signed in to
+  const chromesWithRoom = (deviceId?: string) => gateway.devices().filter(d => d.id !== deviceId && !isCloud(d.id) && !d.locked && !!browsers.get(d.id) && !!chromeAccount(d.id) && !limitSpent(profiles.nameOf(chromeAccount(d.id))))
+
   // Another signed-in profile with room left, the emptiest first: for a topic that ran into a limit. One already
   // spent is skipped until its reset, so two accounts never pass a task back and forth
   async function spareProfile(from: string) {
     const room: { name: string, used: number }[] = []
     for (const name of profiles.list()) {
       if (name === from || !(await profiles.status(name).catch(() => null))?.loggedIn) continue
-      const last = profiles.lastLimit(name)
-      const reset = epochMs(last?.resetsAt)
-      if (last?.status === 'rejected' && (!reset || reset > Date.now())) continue
+      if (limitSpent(name)) continue
       const u = await profiles.usage(name).catch(() => null)
       const used = Math.max(u?.fiveHour?.utilization ?? 0, u?.sevenDay?.utilization ?? 0)
       if (used < 98) room.push({ name, used })
@@ -4122,14 +4133,13 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   })
 
   // A computer came online while worked-on projects wait in the cloud: offer to carry each one over.
-  // Once in a while per topic and computer: a laptop waking up every hour must not nag
-  const MOVE_OFFER_MS = 12 * 3600_000
-  const moveOffers = new Map<string, number>()
+  // Once a day per computer, all its offers together
+  const moveOffers = createMoveOffers(join(cfg.dataDir, 'move-offers.json'))
   const startedAt = Date.now()
   gateway.events.on('online', d => {
     // Right after a restart every device reconnects at once: that is not a computer appearing
     const cloud = gateway.device(CLOUD_DEVICE_ID)
-    if (isCloud(d.id) || !cloud || Date.now() - startedAt < 60_000) return
+    if (isCloud(d.id) || !cloud || Date.now() - startedAt < 60_000 || !moveOffers.due(d.id)) return
     const offered = new Set<string>()
     for (const [key, t] of topics.entries()) {
       const project = cloud.projects.find(p => p.id === t.projectId)
@@ -4137,15 +4147,13 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       // Not while an agent works there, nor while a task runs in it: the offer would only invite a tap that loses work
       if (agentInCloud(project.id) || sharing(project.id).some(k => live.get(k)?.busy)) continue
       offered.add(project.id)
-      const seen = `${key}:${d.id}`
-      if (Date.now() - (moveOffers.get(seen) ?? 0) < MOVE_OFFER_MS) continue
-      moveOffers.set(seen, Date.now())
       const { chatId, topicId } = parseKey(key)
       log.info('move offered', { key, project: project.id, device: d.id })
       sendRich(chatId, topicId, tr(`${osIcon(d)} **${d.name} is online.** Move “${project.name}” from the cloud there? The cloud is a temporary place: after the move the project is removed from it.`, `${osIcon(d)} **${d.name} в сети.** Перенести «${project.name}» из облака туда? Облако — временное место: после переноса проект оттуда удалится.`), {
         reply_markup: new InlineKeyboard().text(tr(`🚚 Move to ${d.name}`, `🚚 Перенести на ${d.name}`), `mv:${d.id}`).text(tr('Later', 'Позже'), 'mvlater'),
       }).catch(() => {})
     }
+    if (offered.size) moveOffers.made(d.id)
   })
 
   async function moveProject(key: string, keys: string[], targetId: string, status: (text: string) => Promise<unknown>) {
@@ -4915,6 +4923,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       // Asks the user itself, by the topic's mode, before anything runs on the other computer
       if (tool === ERRAND_TOOL && mcpServer?.source === 'sdk' && mcpServer.name === ERRAND_SERVER) return { behavior: 'allow', updatedInput: input }
       if (isShiftTool(tool) && mcpServer?.source === 'sdk' && mcpServer.name === SHIFT_SERVER) return { behavior: 'allow', updatedInput: input }
+      // It only shows a card: the user's tap on it is the permission
+      if (tool === POWER_TOOL && mcpServer?.source === 'sdk' && mcpServer.name === POWER_SERVER) return { behavior: 'allow', updatedInput: input }
       // Only a card: what it offers is written on the user's tap
       if (tool === SUGGEST_RULE && mcpServer?.source === 'sdk' && mcpServer.name === RULE_SERVER) return { behavior: 'allow', updatedInput: input }
       // Nothing happens but a message showing how far it got: read-only topics too
@@ -5401,14 +5411,22 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
 
   // --- the night shift: a card to start it, the night without questions, the summary, the computers asleep, a morning push ---
   const zone = () => schedules.zone()
+  const tidyLabel = (t?: ShiftTidy) => (t === 'force'
+    ? tr('🧹 Open windows: close all by force', '🧹 Открытые окна: закрыть все принудительно')
+    : t === 'soft' ? tr('🧹 Open windows: close', '🧹 Открытые окна: закрыть') : tr('🧹 Open windows: leave', '🧹 Открытые окна: не трогать'))
+  const tidyNext = (t?: ShiftTidy): ShiftTidy | undefined => (!t ? 'soft' : t === 'soft' ? 'force' : undefined)
+  const powerLabel = (p: ShiftPower) => (p === 'off'
+    ? tr('⏻ Computers after it: turn off', '⏻ Компьютеры после смены: выключить')
+    : p === 'sleep' ? tr('💤 Computers after it: sleep', '💤 Компьютеры после смены: усыпить') : tr('💻 Computers after it: leave on', '💻 Компьютеры после смены: оставить'))
+  const powerNext = (p: ShiftPower): ShiftPower => (p === 'on' ? 'sleep' : p === 'sleep' ? 'off' : 'on')
   const shiftKeyboard = (sh: Shift): RichButton[][] => [
     [{ text: tr('🌙 Start', '🌙 Начать'), data: `nsh:go:${sh.id}` }],
     [{ text: sh.release ? tr('Branches only, no release', 'Только ветки, без выпуска') : tr('Allow merge and release', 'Разрешить мёрж и выпуск'), data: `nsh:rel:${sh.id}` }],
-    [{ text: sh.tidy ? tr('🧹 Tidy the desktop: yes', '🧹 Убрать рабочий стол: да') : tr('🧹 Tidy the desktop: no', '🧹 Убрать рабочий стол: нет'), data: `nsh:tidy:${sh.id}` }],
-    [{ text: sh.sleep ? tr('💤 Computers to sleep: yes', '💤 Усыпить компьютеры: да') : tr('💤 Computers to sleep: no', '💤 Усыпить компьютеры: нет'), data: `nsh:pc:${sh.id}` }],
+    [{ text: tidyLabel(sh.tidy), data: `nsh:tidy:${sh.id}` }],
+    [{ text: powerLabel(sh.power), data: `nsh:pc:${sh.id}` }],
     [{ text: tr('Cancel', 'Отмена'), data: `nsh:no:${sh.id}` }],
   ]
-  async function offerShift(key: string, p: { tasks: string[], sleep: boolean, tidy?: boolean, release: boolean }) {
+  async function offerShift(key: string, p: { tasks: string[], power: ShiftPower, tidy?: ShiftTidy, release: boolean }) {
     const sh = shifts.offer(key, p)
     const { chatId, topicId } = parseKey(key)
     const rows = shiftKeyboard(sh)
@@ -5434,7 +5452,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       return enqueue(chatId, topicId, '[The user allowed merging and releasing for the rest of this night shift: your instructions say so now. Push and release what is ready, by the project\'s rules, when the tests are green and the work is accepted.]', { reply: false })
     }
     if (what === 'rel' || what === 'pc' || what === 'tidy') {
-      const next = shifts.change(id, what === 'rel' ? { release: !sh.release } : what === 'tidy' ? { tidy: !sh.tidy } : { sleep: !sh.sleep })!
+      const next = shifts.change(id, what === 'rel' ? { release: !sh.release } : what === 'tidy' ? { tidy: tidyNext(sh.tidy) } : { power: powerNext(sh.power) })!
       return draw(shiftCard(next, mdText), shiftKeyboard(next))
     }
     if (what === 'no') {
@@ -5452,7 +5470,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const started = shifts.start(id, { morningAt, ...(wrapAt < morningAt && { wrapAt }), before: { mode: t.mode, night: night.on(chatId) } })!
     topics.set(sh.key, { mode: 'all' })
     if (!sh.release) night.set(chatId, true)
-    log.info('night shift started', { key: sh.key, release: sh.release, sleep: sh.sleep, tidy: !!sh.tidy })
+    log.info('night shift started', { key: sh.key, release: sh.release, power: sh.power, tidy: sh.tidy })
     background(weeksUsed().then(w => void shifts.change(id, { weekAt: w[profiles.nameOf(t.profile)], weeksAt: w })))
     await draw(startedLine(started, zone()), [[{ text: tr('⏹ Stop the shift', '⏹ Остановить смену'), data: `nsh:stop:${id}` }]])
     enqueue(chatId, topicId, `[The user started the night shift and went to sleep. Its rules are in your instructions now. Begin.]`, { reply: false })
@@ -5522,23 +5540,27 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
 
   // What this shift asked for, and what shifts before it left to the last one. A computer another shift still works on
   // is left as it is, and goes to that one: two games in Roblox overnight, and the first done doesn't cut the second off.
-  // Tidied first, then asleep; never off: open apps keep their work, and the user can wake the computer from afar
+  // Tidied first, then asleep or off, as the user chose; of two wishes for one computer the stronger holds
   async function restComputers(sh: Shift) {
     const mine = shiftComputers(sh.key)
-    const sleep = new Set([...(sh.sleep ? mine.keys() : []), ...(sh.offAfter ?? [])])
-    const tidy = new Set([...(sh.tidy ? mine.keys() : []), ...(sh.tidyAfter ?? [])])
+    const rest = new Map<string, PowerHow>(Object.entries(sh.restAfter ?? {}))
+    const tidy = new Map<string, ShiftTidy>(Object.entries(sh.tidyAfter ?? {}))
+    for (const id of mine.keys()) {
+      if (sh.power !== 'on') rest.set(id, strongerPower(rest.get(id), sh.power)!)
+      if (sh.tidy) tidy.set(id, strongerTidy(tidy.get(id), sh.tidy)!)
+    }
     const { chatId, topicId } = parseKey(sh.key)
-    for (const id of new Set([...tidy, ...sleep])) {
+    for (const id of new Set([...tidy.keys(), ...rest.keys()])) {
       const others = shifts.all().filter(x => x.state === 'running' && x.id !== sh.id && shiftComputers(x.key).has(id))
       if (others.length) {
         for (const o of others) {
           shifts.change(o.id, {
-            ...(sleep.has(id) && { offAfter: [...new Set([...(o.offAfter ?? []), id])] }),
-            ...(tidy.has(id) && { tidyAfter: [...new Set([...(o.tidyAfter ?? []), id])] }),
+            ...(rest.has(id) && { restAfter: { ...o.restAfter, [id]: strongerPower(o.restAfter?.[id], rest.get(id))! } }),
+            ...(tidy.has(id) && { tidyAfter: { ...o.tidyAfter, [id]: strongerTidy(o.tidyAfter?.[id], tidy.get(id))! } }),
           })
         }
         log.info('night shift: computer left as it is', { device: id, for: others.map(o => o.key) })
-        background(api.sendMessage(chatId, tr(`💻 <b>${esc(deviceName(id))}</b> is left as it is: another night shift still works on it. It is tidied up or put to sleep when that one is done.`, `💻 <b>${esc(deviceName(id))}</b> пока не трогаю: на нём ещё идёт другая ночная смена. Уберу или усыплю, когда она закончит.`), { ...where(topicId), ...HTML }).catch(() => {}))
+        background(api.sendMessage(chatId, tr(`💻 <b>${esc(deviceName(id))}</b> is left as it is: another night shift still works on it. It is tidied up, put to sleep or turned off when that one is done.`, `💻 <b>${esc(deviceName(id))}</b> пока не трогаю: на нём ещё идёт другая ночная смена. Уберу, усыплю или выключу, когда она закончит.`), { ...where(topicId), ...HTML }).catch(() => {}))
         continue
       }
       const dev = gateway.device(id)
@@ -5546,15 +5568,88 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       const k = mine.get(id) ?? [...topics.entries()].find(([, t]) => t.deviceId === id && t.projectId)?.[0]
       const t = k ? topics.get(k) : undefined
       if (!dev || !t?.projectId) continue
-      if (tidy.has(id)) await tidyComputer(dev, t.projectId, chatId, topicId)
-      if (!sleep.has(id)) continue
-      const how = cfg.shiftSleep ?? sleepCommand(dev.os)
-      if (!how) continue
-      const out = await gateway.request(dev.id, { projectId: t.projectId, bindingVersion: 0, tool: 'run_command', params: { ...how, timeoutSec: 120 } })
-      log.info('night shift: computer to sleep', { device: dev.id, ok: out.ok })
-      if (out.ok) checkAsleep(dev.id, Date.now(), chatId, topicId)
+      if (tidy.has(id)) await tidyComputer(dev, t.projectId, chatId, topicId, tidy.get(id) === 'force')
+      if (rest.has(id)) await powerDown(dev, t.projectId, rest.get(id)!, chatId, topicId)
     }
   }
+
+  // To sleep or off, a minute from now, and a look later at whether it happened
+  async function powerDown(dev: { id: string, os: Device['os'] }, projectId: string, how: PowerHow, chatId: number, topicId: number | undefined) {
+    const cmd = how === 'off' ? cfg.shiftOff ?? offCommand(dev.os) : cfg.shiftSleep ?? sleepCommand(dev.os)
+    if (!cmd) return false
+    const out = await gateway.request(dev.id, { projectId, bindingVersion: 0, tool: 'run_command', params: { ...cmd, timeoutSec: 120 } })
+    log.info('computer to rest', { device: dev.id, how, ok: out.ok })
+    if (out.ok) checkAsleep(dev.id, Date.now(), chatId, topicId, how)
+    return out.ok
+  }
+
+  // --- sleep or off at the user's word: Claude offers a card, and their tap on it does it --------------------
+  type PowerAsk = { key: string, deviceId: string, tidy?: ShiftTidy }
+  const powerAsks = new Map<string, PowerAsk>()
+  const powerCard = (o: PowerAsk) => {
+    const busy = [...live].filter(([k, l]) => k !== o.key && (l.busy || l.queue.length > 0) && topics.get(k).deviceId === o.deviceId).length
+    return [
+      tr(`### 💻 ${mdText(deviceName(o.deviceId))}: sleep or off?`, `### 💻 ${mdText(deviceName(o.deviceId))}: усыпить или выключить?`),
+      [
+        `- ${tr('**Sleep:** open apps stay as they are.', '**Сон:** открытые программы остаются как есть.')}`,
+        `- ${tr('**Off:** everything open closes, unsaved work is lost. It is turned on at the computer or by a smart plug.', '**Выключение:** всё открытое закроется, несохранённое пропадёт. Включить можно на месте или умной розеткой.')}`,
+        ...(o.tidy === 'force' ? [`- ${tr('**Before that** the open windows close, and what stays open is ended by force.', '**Перед этим** открытые окна закроются, а что не закрылось, будет завершено принудительно.')}`]
+          : o.tidy ? [`- ${tr('**Before that** the open windows close; apps asking to save stay.', '**Перед этим** открытые окна закроются; программы, которые просят сохранить, останутся.')}`] : []),
+      ].join('\n'),
+      ...(busy ? [tr(`⚠️ Tasks are running on it in other topics (${busy}): they will be cut off.`, `⚠️ На нём идут задачи в других топиках (${busy}): они оборвутся.`)] : []),
+      tr('It happens a minute after your tap.', 'Сработает через минуту после нажатия.'),
+    ].join('\n\n')
+  }
+  const powerKeyboard = (id: string, o: PowerAsk): RichButton[][] => [
+    [{ text: tr('💤 Sleep', '💤 Усыпить'), data: `pwr:sleep:${id}` }, { text: tr('⏻ Turn off', '⏻ Выключить'), data: `pwr:off:${id}`, style: 'danger' }],
+    [{ text: tidyLabel(o.tidy), data: `pwr:tidy:${id}` }],
+    [{ text: tr('Cancel', 'Отмена'), data: `pwr:no:${id}` }],
+  ]
+  async function offerPower(key: string, p: PowerOffer) {
+    const dev = p.computer ? gateway.devices().find(d => d.name === p.computer) : gateway.device(topics.get(key).deviceId ?? '')
+    if (!dev || isCloud(dev.id)) return `${p.computer ?? 'This topic\'s computer'} is not online: nothing to turn off or put to sleep. Tell the user.`
+    const id = randomBytes(4).toString('hex')
+    const o: PowerAsk = { key, deviceId: dev.id, ...(p.tidy && { tidy: p.tidy }) }
+    powerAsks.set(id, o)
+    const { chatId, topicId } = parseKey(key)
+    const rows = powerKeyboard(id, o)
+    const choice = await keepLoud(() => sendChoice(chatId, topicId, powerCard(o), rows, goKeyboard(rows))).catch(() => null)
+    offers.open(key, 'retry', choice?.messageId)
+    log.info('power offered', { key, device: dev.id })
+    return 'The user sees a card and chooses with a button: sleep, off, or cancel. The bot does it a minute after their tap. Run no command for it. End your turn with one short line.'
+  }
+  bot.callbackQuery(/^pwr:(sleep|off|tidy|no):([0-9a-f]{8})$/, async ctx => {
+    const [, what, id] = ctx.match
+    const o = powerAsks.get(id)
+    const msg = ctx.callbackQuery.message
+    if (!o) return ctx.answerCallbackQuery(tr('No longer relevant', 'Уже неактуально'))
+    const { chatId, topicId } = parseKey(o.key)
+    const draw = (md: string, rows: RichButton[][] = []) => (msg ? editRich(chatId, msg.message_id, rows.length ? `${md}\n\n${richButtons(rows)}` : md) : Promise.resolve(false))
+    await ctx.answerCallbackQuery()
+    if (what === 'tidy') {
+      o.tidy = tidyNext(o.tidy)
+      return draw(powerCard(o), powerKeyboard(id, o))
+    }
+    powerAsks.delete(id)
+    const name = mdText(deviceName(o.deviceId))
+    if (what === 'no') return draw(tr(`💻 **${name}** stays on.`, `💻 **${name}** остаётся включён.`))
+    const how: PowerHow = what === 'off' ? 'off' : 'sleep'
+    const dev = gateway.device(o.deviceId)
+    const t = topics.get(o.key)
+    // run_command needs a project there: this topic's, or any topic's on that computer
+    const projectId = (t.deviceId === o.deviceId ? t.projectId : undefined) ?? [...topics.entries()].find(([, x]) => x.deviceId === o.deviceId && x.projectId)?.[1].projectId
+    if (!dev || !projectId) return draw(tr(`💻 **${name}** is not online any more: nothing was done.`, `💻 **${name}** уже не в сети: ничего не сделано.`))
+    log.info('power chosen', { key: o.key, device: dev.id, how, tidy: o.tidy })
+    await draw(how === 'off'
+      ? tr(`⏻ **${name}** turns off in a minute${o.tidy ? ', after its windows close' : ''}.`, `⏻ **${name}** выключится через минуту${o.tidy ? ', после закрытия окон' : ''}.`)
+      : tr(`💤 **${name}** goes to sleep in a minute${o.tidy ? ', after its windows close' : ''}.`, `💤 **${name}** уснёт через минуту${o.tidy ? ', после закрытия окон' : ''}.`))
+    background((async () => {
+      if (o.tidy) await tidyComputer(dev, projectId, chatId, topicId, o.tidy === 'force')
+      if (!(await powerDown(dev, projectId, how, chatId, topicId))) {
+        await api.sendMessage(chatId, tr(`💻 <b>${esc(dev.name)}</b>: the command didn't go through, it stays on.`, `💻 <b>${esc(dev.name)}</b>: команда не прошла, он остаётся включён.`), { ...where(topicId), ...HTML }).catch(() => {})
+      }
+    })())
+  })
 
   // The week's limit used so far by each signed-in profile, in percent
   async function weeksUsed() {
@@ -5576,7 +5671,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     // A week that started over in the night leaves nothing to compare. Every profile the night ran on, by name
     const points = (name: string) => (now[name] !== undefined && before[name] !== undefined && now[name] >= before[name] ? now[name] - before[name] : undefined)
     const used = (sh.profilesUsed ?? []).flatMap(name => (points(name) !== undefined ? [{ name, points: points(name)! }] : []))
-    const html = nightWidgetHtml({ from: sh.startedAt, to: sh.endedAt, zone: zone(), finished: sh.finished ?? [], left: sh.left ?? [], weekPoints: points(own), ...(used.length > 1 && { byProfile: used }), sleep: sh.sleep })
+    const html = nightWidgetHtml({ from: sh.startedAt, to: sh.endedAt, zone: zone(), finished: sh.finished ?? [], left: sh.left ?? [], weekPoints: points(own), ...(used.length > 1 && { byProfile: used }), power: sh.power })
     if (widgetProblem(html)) return false
     try {
       await keepLoud(() => (api.raw as unknown as { sendWidget: (o: object) => Promise<unknown> }).sendWidget({ chat_id: chatId, ...where(topicId), html, width: 320 }))
@@ -5987,25 +6082,27 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard().text(tr('🧠 Sonnet from the next task', '🧠 Sonnet со следующей задачи'), 'noop') }).catch(() => {})
   })
 
-  async function tidyComputer(dev: { id: string, name: string, os: Device['os'] }, projectId: string, chatId: number, topicId: number | undefined) {
-    const how = cfg.shiftTidy ?? tidyCommand(dev.os)
+  async function tidyComputer(dev: { id: string, name: string, os: Device['os'] }, projectId: string, chatId: number, topicId: number | undefined, force = false) {
+    const how = cfg.shiftTidy ?? tidyCommand(dev.os, false, force)
     if (!how) return
     const out = await gateway.request(dev.id, { projectId, bindingVersion: 0, tool: 'run_command', params: { ...how, timeoutSec: 120 } })
     const r = out.ok ? parseTidy(String((out.result as { stdout?: string }).stdout ?? '')) : null
-    log.info('night shift: computer tidied', { device: dev.id, ok: !!r, closed: r?.closed, left: r?.left.length })
+    log.info('computer tidied', { device: dev.id, ok: !!r, force, closed: r?.closed, left: r?.left.length, killed: r?.killed?.length })
     background(api.sendMessage(chatId, tidyLine(dev.name, r, esc), { ...where(topicId), ...HTML, disable_notification: true }).catch(() => {}))
   }
 
-  // Sent to sleep, still there a while later on a connection from before it should have slept: said once, so the morning
-  // doesn't find it awake unawares. A computer that slept and woke has a connection from after it, and is not a failure;
-  // one that only reconnected in the minute before the sleep is no proof of one (a night it stayed on all the same)
+  // Sent to sleep or told to turn off, still there a while later on a connection from before it should have gone: said
+  // once, so the morning doesn't find it on unawares. A computer that slept and woke has a connection from after it, and
+  // is not a failure; one that only reconnected in the minute before is no proof of one (a night it stayed on all the same)
   const SLEEP_AFTER_MS = 60_000
-  function checkAsleep(deviceId: string, orderedAt: number, chatId: number, topicId: number | undefined) {
+  function checkAsleep(deviceId: string, orderedAt: number, chatId: number, topicId: number | undefined, how: PowerHow = 'sleep') {
     const timer = setTimeout(() => {
       const dev = gateway.device(deviceId)
       if (!dev || dev.connectedAt > orderedAt + SLEEP_AFTER_MS + 30_000) return
-      log.warn('night shift: computer still awake', { device: deviceId })
-      background(api.sendMessage(chatId, tr(`💻 <b>${esc(dev.name)}</b> was told to sleep, but it is still awake. Something holds it: a Windows update or a system prompt. It needs a look in the morning.`, `💻 <b>${esc(dev.name)}</b> получил команду уснуть, но всё ещё не спит. Что-то его держит: обновление Windows или системный запрос. Утром стоит посмотреть.`), { ...where(topicId), ...HTML }).catch(() => {}))
+      log.warn('computer still on', { device: deviceId, how })
+      background(api.sendMessage(chatId, how === 'off'
+        ? tr(`💻 <b>${esc(dev.name)}</b> was told to turn off, but it is still on. Something holds it: a Windows update or a system prompt. It needs a look.`, `💻 <b>${esc(dev.name)}</b> получил команду выключиться, но всё ещё включён. Что-то его держит: обновление Windows или системный запрос. Стоит посмотреть.`)
+        : tr(`💻 <b>${esc(dev.name)}</b> was told to sleep, but it is still awake. Something holds it: a Windows update or a system prompt. It needs a look in the morning.`, `💻 <b>${esc(dev.name)}</b> получил команду уснуть, но всё ещё не спит. Что-то его держит: обновление Windows или системный запрос. Утром стоит посмотреть.`), { ...where(topicId), ...HTML }).catch(() => {}))
     }, cfg.shiftOffCheckMs ?? 10 * 60_000)
     timer.unref?.()
   }
@@ -6490,25 +6587,31 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       return now && !picked ? `This topic's browser is deviceId ${bound.deviceId}. Next call select_browser with it, whatever the list says is in use: other browser tools are refused until then.` : undefined
     }) : undefined
 
+    const powerComputers = gateway.devices().filter(d => !isCloud(d.id) && !d.locked).map(d => d.name)
     // Chrome on another computer: a short session on that computer's profile does the task there and answers
     const errandComputers = dev && !isCloud(dev.id) ? gateway.devices().filter(d => (d.id === dev.id ? chromeElsewhere : !isCloud(d.id) && !d.locked && !!browsers.get(d.id))) : []
-    async function browserErrand(p: Errand): Promise<ErrandResult> {
-      const target = errandComputers.find(d => d.name === p.computer)
-      const b = target && gateway.device(target.id) ? browsers.get(target.id) : undefined
-      if (!target || !b) return `${p.computer} is offline or has no Chrome chosen: the user picks one with /browser in a topic on it.`
-      const mode = turnMode(key)
-      const d = decide({ mode, readOnly: false, fileEdit: false, allowAllForTask: l.allowAll })
-      if (d === 'deny') return readOnlyMessage(key)
-      if (d === 'ask') {
-        const r = await askPermission(chatId, topicId, l, key, ERRAND_TOOL, p as unknown as Record<string, unknown>, { device: target.name, project: '' }, abort.signal)
-        if (r.behavior !== 'allow') return r.message
-      }
+    // One computer's Chrome for an errand. limit: its account has spent its limit. skip: it can't take the errand at all
+    type ErrandTry = ErrandResult | { limit: string } | { skip: string }
+    async function errandOn(target: (typeof errandComputers)[number], p: Errand, instead?: string): Promise<ErrandTry> {
+      const b = browsers.get(target.id)!
       const profile = profiles.nameOf(chromeAccount(target.id) ?? t.profile)
-      if (!(await profiles.status(profile).catch(() => null))?.loggedIn) return `The profile ${profile} of ${target.name} isn't signed in to Claude: the user signs it in with /profiles.`
+      const atLimit = () => {
+        const reset = limitSpent(profile)?.reset
+        return { limit: `${target.name} (profile ${profile}${reset ? `, until ${new Date(reset).toISOString()}` : ''})` }
+      }
+      if (!(await profiles.status(profile).catch(() => null))?.loggedIn) return { skip: `The profile ${profile} of ${target.name} isn't signed in to Claude: the user signs it in with /profiles.` }
+      // A session on a spent account only fails: not started, and not asked about
+      if (limitSpent(profile)) return atLimit()
       // One browser at a time per account: this turn's own, if it holds another on the same one, blocks it
       const lock = lockOf(profile)
       const mine = lock.holds(key)
-      if (mine && mine !== b.deviceId) return `${target.name}'s Chrome is on the same Claude account as the browser this turn is using, and the account works one browser at a time: do it in a turn that doesn't use this topic's Chrome.`
+      if (mine && mine !== b.deviceId) return { skip: `${target.name}'s Chrome is on the same Claude account as the browser this turn is using, and the account works one browser at a time: do it in a turn that doesn't use this topic's Chrome.` }
+      const d = decide({ mode: turnMode(key), readOnly: false, fileEdit: false, allowAllForTask: l.allowAll })
+      if (d === 'deny') return readOnlyMessage(key)
+      if (d === 'ask') {
+        const r = await askPermission(chatId, topicId, l, key, ERRAND_TOOL, { ...p, computer: target.name } as unknown as Record<string, unknown>, { device: target.name, project: '' }, abort.signal)
+        if (r.behavior !== 'allow') return r.message
+      }
       const errandKey = `${key}:errand`
       const ac = new AbortController()
       const stop = () => ac.abort()
@@ -6517,7 +6620,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       let picked = false
       let route: Promise<true | string> | undefined
       let session: string | undefined
-      log.info('browser errand', { key, computer: target.id, profile })
+      log.info('browser errand', { key, computer: target.id, profile, fallback: !!instead })
       try {
         const res = await startTurn({
           prompt: p.task,
@@ -6546,14 +6649,14 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
           onSession: id => { session = id },
           onRateLimit: info => profiles.noteLimit(profile, info),
         })
-        if (res.errorKind === 'rate_limit') return `The limit of the profile ${profile}, which ${target.name} runs on, is reached: nothing was done there.`
+        if (res.errorKind === 'rate_limit') return atLimit()
         if (ac.signal.aborted && !abort.signal.aborted) return `The errand on ${target.name} didn't finish within ${ERRAND_MS / 60_000} minutes.`
         const images = screenshotPaths(res.text).flatMap(path => {
           const shot = chromeScreenshot(path)
           return shot ? [{ data: readFileSync(shot).toString('base64'), mime: /\.png$/i.test(shot) ? 'image/png' : /\.webp$/i.test(shot) ? 'image/webp' : 'image/jpeg' }] : []
         })
         log.info('browser errand done', { key, computer: target.id, error: !!res.isError, images: images.length })
-        return { text: `[From Chrome on ${target.name}, profile ${profile}]\n${res.text.replace(/^SCREENSHOT:.*$/gm, '').trim()}`, images }
+        return { text: `[From Chrome on ${target.name}, profile ${profile}${instead ? `. ${instead}` : ''}]\n${res.text.replace(/^SCREENSHOT:.*$/gm, '').trim()}`, images }
       } catch (e) {
         return `The errand on ${target.name} failed: ${(e as Error).message}`
       } finally {
@@ -6562,6 +6665,29 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         lock.release(errandKey)
         if (session) profiles.removeSession(session, profile)
       }
+    }
+
+    // The Chrome asked for first. A Chrome works only through the Claude account it is signed in to, so when that
+    // account has spent its limit the errand goes to the other computers' in turn: the task matters more than which
+    // browser does it, and the answer says where it was done
+    async function browserErrand(p: Errand): Promise<ErrandResult> {
+      const asked = errandComputers.find(d => d.name === p.computer)
+      if (!asked || !gateway.device(asked.id) || !browsers.get(asked.id)) return `${p.computer} is offline or has no Chrome chosen: the user picks one with /browser in a topic on it.`
+      const others = errandComputers.filter(d => d.id !== asked.id && gateway.device(d.id) && browsers.get(d.id))
+      const spent: string[] = []
+      for (const target of [asked, ...others]) {
+        const r = await errandOn(target, p, spent.length ? `Done here instead of ${spent.join(', ')}, at the limit of its Claude account: the sign-ins in this Chrome may differ` : undefined)
+        if (typeof r === 'object' && 'limit' in r) {
+          spent.push(r.limit)
+          continue
+        }
+        if (typeof r === 'object' && 'skip' in r) {
+          if (target === asked) return r.skip
+          continue
+        }
+        return r
+      }
+      return `Nothing was done: the Claude account of every Chrome that could do it has spent its limit: ${spent.join('; ')}. A Chrome works only through the account it is signed in to, so none can before a reset. Don't try a browser again in this turn.`
     }
 
     const canAskBrowser = !!dev && !isCloud(dev.id) && !t.browser && !chromeElsewhere
@@ -6578,6 +6704,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       [SURVEY_SERVER]: createSurveyServer(p => startSurvey(key, p)),
       [CHECKLIST_SERVER]: createChecklistServer(showChecklist),
       [LOTTIE_SERVER]: createLottieServer(convertLottie, !!(dev && project)),
+      // Sleep or off at the user's word: where a person leads the topic, never an agent or a night shift
+      ...(powerComputers.length && !t.head && !shiftOf(key) && turnMode(key) !== 'read' && { [POWER_SERVER]: createPowerServer(powerComputers, p => offerPower(key, p)) }),
       // Offered where a shift can be led from; its head alone ends it
       ...((shifts.running(key) || (!t.head && !shiftOf(key))) && { [SHIFT_SERVER]: createShiftServer(shifts.running(key)
         ? { end: p => endShift(key, p) }
@@ -6762,9 +6890,12 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const profileName = profiles.nameOf(t.profile)
     const signIn = ['authentication_failed', 'oauth_org_not_allowed', 'account_on_hold', 'verification_required', 'billing_error'].includes(res.errorKind ?? '')
     const limitHit = res.errorKind === 'rate_limit' || (!!res.isError && !signIn && profiles.lastLimit(profileName)?.status === 'rejected')
-    // Not a topic working in Chrome: its browser is signed in to this profile's account, and another wouldn't see it
+    // A topic working in Chrome moves only when its browser work has somewhere to go: its own Chrome is signed in to
+    // the spent account, so another computer's, on an account with room, takes it (the errand tool finds it)
     // Stopped by the bot itself at paid extra usage counts the same: the plan's limit ran out
-    const atLimit = !res.aborted && limitHit && !topics.get(key).browser && mayMoveAtLimit(key)
+    const inChrome = !!topics.get(key).browser
+    const chromeTo = inChrome && t.deviceId && chromeAccount(t.deviceId) ? chromesWithRoom(t.deviceId).map(d => d.name) : []
+    const atLimit = !res.aborted && limitHit && (!inChrome || chromeTo.length > 0) && mayMoveAtLimit(key)
     const spare = overage ?? (atLimit ? await spareProfile(profileName) : undefined)
     if (spare) {
       const nightOn = shiftOf(key)
@@ -6782,10 +6913,13 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         ? tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached and paid extra usage began: the night shift goes on on <b>${esc(spare)}</b>${session}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан, пошёл платный Extra usage: ночная смена продолжает на <b>${esc(spare)}</b>${session}.`)
         : nightOn
           ? tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached: the night shift goes on on <b>${esc(spare)}</b>${session}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан: ночная смена продолжает на <b>${esc(spare)}</b>${session}.`)
-          : tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached: I go on on <b>${esc(spare)}</b>${session}, and back after it resets, ${resetTag(backAt)}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан: продолжаю на <b>${esc(spare)}</b>${session}, вернусь после сброса, ${resetTag(backAt)}.`),
+          : tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached: I go on on <b>${esc(spare)}</b>${session}, and back after it resets, ${resetTag(backAt)}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан: продолжаю на <b>${esc(spare)}</b>${session}, вернусь после сброса, ${resetTag(backAt)}.`)
+            + (chromeTo.length ? tr(` This computer's Chrome works only through <b>${esc(profileName)}</b>, so until then the browser work goes to Chrome on <b>${esc(chromeTo.join(', '))}</b>.`, ` Chrome этого компьютера работает только через <b>${esc(profileName)}</b>, поэтому до тех пор работа в браузере идёт через Chrome на <b>${esc(chromeTo.join(', '))}</b>.`) : ''),
       { ...where(topicId), ...HTML, disable_notification: true }).catch(() => {}))
-      enqueue(chatId, topicId, prompt, { images, reply: false, fromMode: l.modeCap, ownAnswers: l.ownerSpoke })
-      return { text: '', note: tr(`🔀 on ${spare}`, `🔀 на ${spare}`) }
+      // The same task again, as what it was: still a scheduled run if it was one, answering the same message, and with
+      // no word about a queue. Not a failure and not a report: an agent's head hears nothing until the work is done
+      enqueue(chatId, topicId, prompt, { images, reply: false, fromMode: l.modeCap, ownAnswers: l.ownerSpoke, silent: true, scheduleId: [...l.runs][0], shownId: replyTo })
+      return { text: '', paused: true, moved: true, note: tr(`🔀 on ${spare}`, `🔀 на ${spare}`) }
     }
     if (!res.aborted && (limitHit || signIn)) {
       const reset = epochMs(profiles.lastLimit(profileName)?.resetsAt)

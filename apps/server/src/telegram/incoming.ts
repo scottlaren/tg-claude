@@ -103,7 +103,8 @@ export function replaceQueued(queue: { msgId?: number, text: string, context?: s
 
 // A reaction can notify, so it appears only when it says what nothing else does. The status shows a turn at work
 // and the answer shows it went well; a failure may leave no answer to look at
-export const turnReaction = (o: { note?: string | null, stopped?: boolean }) => (o.note && !o.stopped ? '💔' as const : null)
+// Nor is a task that only moved to another profile a failure: it is going on
+export const turnReaction = (o: { note?: string | null, stopped?: boolean, moved?: boolean }) => (o.note && !o.stopped && !o.moved ? '💔' as const : null)
 const REPLY_MEDIA: [keyof Message, string][] = [['photo', 'a photo'], ['video', 'a video'], ['video_note', 'a round video'], ['voice', 'a voice message'], ['audio', 'an audio file'], ['animation', 'a GIF'], ['document', 'a file'], ['sticker', 'a sticker']]
 
 // Which earlier message the user is replying to, for Claude: its words alone may only say «redo this». ownSticker: what

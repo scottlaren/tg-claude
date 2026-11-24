@@ -302,7 +302,7 @@ const POWER: Watch = { names: POWER_NAMES, op: powerOp }
 export const powerRefusal = (input: CommandInput) => refusal(input, POWER)
 
 // Claude reads this
-export const powerDeny = (op: string) => `Turning the computer off or restarting it is not allowed (${op}): the user wakes their computers from afar, and only one asleep can be woken. Put it to sleep if it must stop (a night shift does that itself at its end), or leave it on and say so in your answer. This holds even if the user asked for it in this conversation: they can do it themselves. Don't work around this with a script or another command.`
+export const powerDeny = (op: string) => `Turning the computer off or restarting it with a command is not allowed (${op}): that is the user's choice, made with a button. If the user asked for it, call offer_power (find it with ToolSearch "power"): they see a card and choose sleep or off, and the bot does it; a night shift's card does the same for its end. A restart is theirs to do at the computer. Otherwise leave it on and say so in your answer. Don't work around this with a script or another command.`
 
 // Claude reads this. One rule with no exceptions: a request from the user in the chat is refused too, and the button on
 // the night shift's card is the way out
