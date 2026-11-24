@@ -9,6 +9,7 @@ import type { ScheduleProposal } from '../claude/schedule-tools.ts'
 import { epochMs, inTime, timeTag } from './usage.ts'
 import { hashtag } from './emoji.ts'
 import { keepLoud } from './quiet.ts'
+import { topicWay, botUserOf } from './overview.ts'
 import { fenced } from './incoming.ts'
 import { richButtons, type RichButton } from './render.ts'
 import type { Choice } from './bot.ts'
@@ -156,7 +157,8 @@ export function createScheduleMenu({ bot, schedule, topics, gateway, profiles, l
       const how = t.once ? tr('🔂 Once', '🔂 Один раз') : `🔁 ${cap(cronLabel(t.cron) ?? `\`${t.cron}\``)}`
       const when = t.paused ? tr('⏸ On pause', '⏸ На паузе') : `⏭ ${cap(nextLabel(t.nextAt, zone))}`
       const topic = topics.get(t.key).title
-      return [`**${tasks.length > 1 ? `${i + 1}. ` : ''}${mdText(t.name)}**`, how, when, ...(t.browser ? [tr('🌐 With Chrome', '🌐 С Chrome')] : []), ...(topic ? [`💬 ${mdText(topic)}`] : [])].map(l => `> ${l}`).join('  \n')
+      const way = topicWay(parseKey(t.key).chatId, parseKey(t.key).topicId, botUserOf(bot))
+      return [`**${tasks.length > 1 ? `${i + 1}. ` : ''}${mdText(t.name)}**`, how, when, ...(t.browser ? [tr('🌐 With Chrome', '🌐 С Chrome')] : []), ...(topic ? [`💬 ${way ? `[${mdText(topic)}](${way})` : mdText(topic)}`] : [])].map(l => `> ${l}`).join('  \n')
     })
     const rows: RichButton[][] = tasks.map((t, i) => [
       { text: t.paused ? `▶️ ${tr('Resume', 'Продолжить')}${n(i)}` : `⏸ ${tr('Pause', 'Пауза')}${n(i)}`, data: `sch:p:${t.id}` },

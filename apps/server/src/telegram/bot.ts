@@ -32,7 +32,7 @@ import { installLines } from '../install.ts'
 import type { AgentBundles } from '../bundle.ts'
 import type { Owners } from '../owners.ts'
 import type { Sandbox, SandboxState } from '../sandbox.ts'
-import { usageMarkdown, planLabel, maskEmail, costLabel, resetTag, bar } from './usage.ts'
+import { usageMarkdown, planLabel, maskEmail, costLabel, resetTag, bar, epochMs } from './usage.ts'
 import { createLimitWatch, limitWarning } from './limit-watch.ts'
 import { createAppServer, appToolOf } from '../claude/app-tools.ts'
 import { decide } from '../claude/policy.ts'
@@ -98,7 +98,7 @@ import { createSpeechSetup } from './speech.ts'
 import { createHandIn, handInNote, justHandedIn, ownWords, HAND_IN } from './hand-in.ts'
 import { createFolderRetry, isBusyFolder, rmdirCommand } from './busy-folder.ts'
 import { createSpend } from './spend.ts'
-import { createOffers, createOverview } from './overview.ts'
+import { createOffers, createOverview, topicWay, botUserOf } from './overview.ts'
 import { createPresence } from './presence.ts'
 import { createContextTrust, heldBackBlock, heldBackPreview, textHash } from './context-trust.ts'
 import { createRuleServer, withRule, RULE_SERVER, SUGGEST_RULE } from '../claude/rule-tools.ts'
@@ -439,6 +439,18 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   // A profile whose plan limit ran out and that goes on on paid extra usage: the user heard of it, when (once a window)
   const overageWarned = new Map<string, number>()
   const OVERAGE_WARN_MS = 5 * 3600_000
+  // A topic named in another topic is the way there: one tap instead of a search through the list. For HTML and for
+  // Rich Markdown; where Telegram has no link to give, it stays a name
+  const topicUrl = (key: string) => topicWay(parseKey(key).chatId, parseKey(key).topicId, botUserOf(bot))
+  const topicA = (key: string, name: string) => (topicUrl(key) ? `<a href="${topicUrl(key)}">${esc(name)}</a>` : esc(name))
+  const topicMd = (key: string, name: string) => (topicUrl(key) ? `[${mdText(name)}](${topicUrl(key)})` : mdText(name))
+  // When the bot moved a topic to another profile at a spent limit. Two accounts that both refuse without saying their
+  // limit is spent would pass a task back and forth for ever: past a few moves an hour it waits instead
+  const limitMoves = new Map<string, number[]>()
+  const LIMIT_MOVES_MAX = 2
+  const LIMIT_MOVES_MS = 3600_000
+  const mayMoveAtLimit = (key: string) => (limitMoves.get(key) ?? []).filter(at => Date.now() - at < LIMIT_MOVES_MS).length < LIMIT_MOVES_MAX
+  const movedAtLimit = (key: string) => limitMoves.set(key, [...(limitMoves.get(key) ?? []).filter(at => Date.now() - at < LIMIT_MOVES_MS), Date.now()])
   const lockOf = (profile: string) => browserLocks.get(profile) ?? browserLocks.set(profile, createBrowserLock()).get(profile)!
   // A browser errand on another computer has this long to finish
   const ERRAND_MS = 10 * 60_000
@@ -1545,7 +1557,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const t = topics.get(key)
     const from = profiles.nameOf(t.profile)
     const carried = carry && !!t.sessionId && profiles.carry(t.sessionId, from, to)
-    topics.set(key, { profile: to, sessionId: carried ? t.sessionId : null, ...(own && { profileOwn: true }) })
+    // Any switch ends a stay the bot started at a limit; the move at a limit writes its own way back after this
+    topics.set(key, { profile: to, sessionId: carried ? t.sessionId : null, profileBack: undefined, ...(own && { profileOwn: true }) })
     log.info('profile', { key, from, to, carried, own })
     return carried
   }
@@ -1556,6 +1569,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   // Before a turn: a topic follows its computer's profile, the conversation carried over. Not onto a profile that
   // can't sign in: that would only stop it
   async function followDeviceProfile(key: string) {
+    await profileHome(key)
     const t = topics.get(key)
     const want = profiles.nameOf(profileFor(t))
     if (want === profiles.nameOf(t.profile) || !profiles.list().includes(want)) return
@@ -1568,14 +1582,35 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     ), { ...where(topicId), ...HTML, disable_notification: true }).catch(() => {}))
   }
 
-  // Another signed-in profile with room left, the emptiest first: for a night shift that ran into a limit. One the
-  // night already spent is skipped until its reset, so two accounts never pass a task back and forth
+  // Before a turn: a topic the bot moved at a spent limit goes home once that limit has reset. Its computer's profile
+  // and the account its Chrome is signed in to are there. A limit that turned out longer puts the return off
+  async function profileHome(key: string) {
+    const t = topics.get(key)
+    const back = t.profileBack
+    if (!back || Date.now() < back.at) return
+    const last = profiles.lastLimit(back.to)
+    const reset = epochMs(last?.resetsAt)
+    if (last?.status === 'rejected' && reset && reset > Date.now()) return void topics.set(key, { profileBack: { ...back, at: reset } })
+    topics.set(key, { profileBack: undefined })
+    if (back.to === profiles.nameOf(t.profile) || !profiles.list().includes(back.to)) return
+    if (!(await profiles.status(back.to).catch(() => null))?.loggedIn) return
+    const carried = await switchProfile(key, back.to, true, back.own)
+    if (!back.own) topics.set(key, { profileOwn: undefined })
+    const { chatId, topicId } = parseKey(key)
+    background(api.sendMessage(chatId, tr(
+      `🧠 The limit of <b>${esc(back.to)}</b> has reset: this topic is back on it${t.sessionId ? (carried ? ', the conversation moved over' : ', in a new session') : ''}.`,
+      `🧠 Лимит <b>${esc(back.to)}</b> сбросился: топик снова на нём${t.sessionId ? (carried ? ', переписка перенесена' : ', в новой сессии') : ''}.`,
+    ), { ...where(topicId), ...HTML, disable_notification: true }).catch(() => {}))
+  }
+
+  // Another signed-in profile with room left, the emptiest first: for a topic that ran into a limit. One already
+  // spent is skipped until its reset, so two accounts never pass a task back and forth
   async function spareProfile(from: string) {
     const room: { name: string, used: number }[] = []
     for (const name of profiles.list()) {
       if (name === from || !(await profiles.status(name).catch(() => null))?.loggedIn) continue
       const last = profiles.lastLimit(name)
-      const reset = last?.resetsAt ? (last.resetsAt < 1e12 ? last.resetsAt * 1000 : last.resetsAt) : undefined
+      const reset = epochMs(last?.resetsAt)
       if (last?.status === 'rejected' && (!reset || reset > Date.now())) continue
       const u = await profiles.usage(name).catch(() => null)
       const used = Math.max(u?.fiveHour?.utilization ?? 0, u?.sevenDay?.utilization ?? 0)
@@ -1615,7 +1650,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const t = topics.get(key)
     const devProfile = t.deviceId ? registry.profileOf(t.deviceId) : undefined
     if (!devProfile) return ctx.answerCallbackQuery(tr('No longer relevant', 'Уже неактуально'))
-    topics.set(key, { profileOwn: undefined })
+    topics.set(key, { profileOwn: undefined, profileBack: undefined })
     log.info('profile follows the computer', { key, profile: devProfile })
     await ctx.answerCallbackQuery(devProfile)
     await ctx.editMessageText(tr(`Claude profile in this topic: as its computer, <b>${esc(devProfile)}</b>, from the next message.`, `Профиль Claude в этом топике: как у компьютера, <b>${esc(devProfile)}</b>, со следующего сообщения.`), HTML).catch(() => {})
@@ -1747,10 +1782,10 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     if (!agent || topics.get(agent).head !== headKey || !workersOf(headKey).includes(agent)) return false
     const name = topics.get(agent).workerName ?? 'agent'
     const at = parseKey(agent)
-    const shown = await foldedMessage(at.chatId, at.topicId, `<b>${tr('👤 You, answering your report in the head:', '👤 Ты, в ответ на отчёт в хеде:')}</b>`, text).catch(() => undefined)
+    const shown = await foldedMessage(at.chatId, at.topicId, `<b>${topicA(headKey, tr('👤 You, answering your report in the head:', '👤 Ты, в ответ на отчёт в хеде:'))}</b>`, text).catch(() => undefined)
     enqueue(at.chatId, at.topicId, `[The user answers your report, writing in the head's topic]\n${text}`, { reply: false, shownId: shown?.message_id, ownAnswers: true, rush: true, images })
     log.info('reply to a report sent to its agent', { head: headKey, agent })
-    await api.sendMessage(chatId, tr(`↪️ Sent to the agent <b>${esc(name)}</b>`, `↪️ Передал агенту <b>${esc(name)}</b>`), { ...where(topicId), ...HTML, reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true } }).catch(() => {})
+    await api.sendMessage(chatId, tr(`↪️ Sent to the agent <b>${topicA(agent, name)}</b>`, `↪️ Передал агенту <b>${topicA(agent, name)}</b>`), { ...where(topicId), ...HTML, reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true } }).catch(() => {})
     return true
   }
 
@@ -1859,7 +1894,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const t = topics.get(key)
     if (!t.head) return
     const { chatId, topicId } = parseKey(t.head)
-    api.sendMessage(chatId, tr(`🤖 Agent <b>${esc(t.workerName ?? '')}</b> ${what}: look in its topic.`, `🤖 Агент <b>${esc(t.workerName ?? '')}</b> ${what} — загляни в его топик.`), { ...where(topicId), ...HTML }).catch(() => {})
+    api.sendMessage(chatId, tr(`🤖 Agent <b>${topicA(key, t.workerName ?? '')}</b> ${what}: look in its topic.`, `🤖 Агент <b>${topicA(key, t.workerName ?? '')}</b> ${what} — загляни в его топик.`), { ...where(topicId), ...HTML }).catch(() => {})
   }
 
   // chained: this start is the moment an agent waited for, past the check it went through when it was asked for
@@ -1921,10 +1956,10 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         })
         topics.set(headKey, { workers: [...team, key] })
         log.info('agent started', { head: headKey, worker: key, name: a.name, device: dev.id, project: project.id, branch: worktree?.branch, model: a.model, effort: a.effort, profile: profiles.nameOf(t.profile) })
-        const shown = await sayFolded(key, `<b>${tr('🧭 Task from the head', '🧭 Задача от хеда')}</b> · ${esc(placeOf(t))} · 🧠 ${esc(mindOf(t))}`, a.task)
-        await sendRich(chatId, headTopic, `${tr('🤖 Agent started', '🤖 Запущен агент')} **${a.name}** · ${placeOf(t)} · 🧠 ${mindOf(t)}`).catch(() => {})
+        const shown = await sayFolded(key, `<b>${topicA(headKey, tr('🧭 Task from the head', '🧭 Задача от хеда'))}</b> · ${esc(placeOf(t))} · 🧠 ${esc(mindOf(t))}`, a.task)
+        await sendRich(chatId, headTopic, `${tr('🤖 Agent started', '🤖 Запущен агент')} **${topicMd(key, a.name)}** · ${placeOf(t)} · 🧠 ${mindOf(t)}`).catch(() => {})
         enqueue(chatId, topic.message_thread_id, `${HEAD_TASK}\n${a.task}`, { reply: false, shownId: shown?.message_id })
-        return `Started «${a.name}» on ${dev.name}, project ${project.name} (${project.path})${worktree ? `, its own branch ${worktree.branch}: merge it into yours after its report` : ''}, ${a.model}/${a.effort}. It works in parallel; its report arrives here as a message when its turn ends. End your turn unless you have other work.`
+        return `Started «${a.name}» on ${dev.name}, project ${project.name} (${project.path})${worktree ? `, its own branch ${worktree.branch}: merge it into yours after its report` : ''}, ${a.model}/${a.effort}.${topicUrl(key) ? ` Its topic: ${topicUrl(key)}` : ''} It works in parallel; its report arrives here as a message when its turn ends. End your turn unless you have other work.`
       },
 
       async message({ agent, text, now, doing }) {
@@ -1932,7 +1967,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         if (!k) return missing(agent)
         if (doing) topics.set(k, { workerDoing: doing })
         topics.touch(k)
-        const shown = await sayFolded(k, `<b>${tr('🧭 Head:', '🧭 Хед:')}</b>`, text)
+        const shown = await sayFolded(k, `<b>${topicA(headKey, tr('🧭 Head:', '🧭 Хед:'))}</b>`, text)
         const busy = live.get(k)?.busy
         enqueue(chatId, parseKey(k).topicId, `${HEAD_MESSAGE}\n${text}`, { reply: false, shownId: shown?.message_id, rush: now })
         if (!busy) return 'Delivered; the agent is on it.'
@@ -1956,7 +1991,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         return [...team.map(k => {
           const t = topics.get(k)
           const last = lastReports.get(k)
-          return `- ${t.workerName}: ${placeOf(t)}, ${mindOf(t)}${t.profile !== topics.get(headKey).profile ? `, profile ${profiles.nameOf(t.profile)}` : ''}; ${stateOf(k)}${last ? `; last report: ${trunc(last, 400)}` : ''}`
+          return `- ${t.workerName}${topicUrl(k) ? ` (topic ${topicUrl(k)})` : ''}: ${placeOf(t)}, ${mindOf(t)}${t.profile !== topics.get(headKey).profile ? `, profile ${profiles.nameOf(t.profile)}` : ''}; ${stateOf(k)}${last ? `; last report: ${trunc(last, 400)}` : ''}`
         }), ...waiting.map(w => `- ${w.name}: not started, waits for ${w.after}`)].join('\n')
       },
 
@@ -2019,7 +2054,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
 
   // An agent finished: the ones waiting for it start with its report, or don't start if it failed. Told before the head
   // reads the report, so that it doesn't start them again by hand
-  function settleChain(headKey: string, finished: Topic, out: TurnOutcome, body: string) {
+  function settleChain(headKey: string, finishedKey: string, finished: Topic, out: TurnOutcome, body: string) {
     const name = finished.workerName?.toLowerCase() ?? ''
     const waiting = topics.get(headKey).waitingAgents ?? []
     const next = waiting.filter(w => w.after.toLowerCase() === name)
@@ -2032,8 +2067,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       const dropped = dropWaiting(headKey, w => w.after.toLowerCase() === name)
       log.info('chain stopped', { head: headKey, after: name, dropped })
       return tell(
-        `⛓ <b>${esc(dropped.join(', '))}</b> did not start: <b>${esc(finished.workerName ?? '')}</b> didn't finish well.`,
-        `⛓ <b>${esc(dropped.join(', '))}</b> не запущены: <b>${esc(finished.workerName ?? '')}</b> не завершил работу нормально.`,
+        `⛓ <b>${esc(dropped.join(', '))}</b> did not start: <b>${topicA(finishedKey, finished.workerName ?? '')}</b> didn't finish well.`,
+        `⛓ <b>${esc(dropped.join(', '))}</b> не запущены: <b>${topicA(finishedKey, finished.workerName ?? '')}</b> не завершил работу нормально.`,
         `[Not started: ${dropped.join(', ')}. They were waiting for “${finished.workerName}”, which ended with: ${out.note ?? 'stopped'}. Decide what to do: start them again if it makes sense.]`,
       )
     }
@@ -2061,9 +2096,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const body = out.text.trim()
     lastReports.set(key, body || out.note || '')
     reportedAt.set(key, Date.now())
-    settleChain(t.head, t, out, body)
+    settleChain(t.head, key, t, out, body)
     topics.touch(t.head)
-    const title = `${tr('🤖 Report from agent', '🤖 Отчёт агента')} <b>${esc(t.workerName ?? '')}</b>${out.note ? ` · ${esc(out.note)}` : ''}`
+    const title = `${tr('🤖 Report from agent', '🤖 Отчёт агента')} <b>${topicA(key, t.workerName ?? '')}</b>${out.note ? ` · ${esc(out.note)}` : ''}`
     // Pictures in the report are files on the agent's computer: they go under the quote and are fetched from
     // there, as in the agent's own topic. Left in the quote, Telegram takes their paths for web addresses
     // and refuses the whole message
@@ -2078,7 +2113,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       await sendRichWithDeviceMedia(chatId, topicId, pics.map(p => p.match).join('\n\n'), { deviceId: t.deviceId!, projectId: t.projectId!, bindingVersion: t.bindingVersion })
         .catch(e => log.warn('report pictures not shown', (e as Error).message))
     }
-    const report = `[Report from agent “${t.workerName}” · ${placeOf(t)}${out.note ? ` · ${out.note}` : ''}]\n${trunc(body || '(no text)', 8000)}` +
+    const report = `[Report from agent “${t.workerName}” · ${placeOf(t)}${out.note ? ` · ${out.note}` : ''}${topicUrl(key) ? ` · topic ${topicUrl(key)}` : ''}]\n${trunc(body || '(no text)', 8000)}` +
       (pics.length ? '\n[The bot has already shown the images from the report to the user, under the report.]' : '')
     // Head and workers may keep waking each other: a while without the user and the head waits for them
     const n = (teamWakes.get(t.head) ?? 0) + 1
@@ -2118,7 +2153,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
           : tr(`no progress for ${reason.minutes} min`, `нет прогресса уже ${reason.minutes} мин`)
     if (t.head) {
       const name = t.workerName ?? ''
-      return toHead(key, tr(`🤖 Agent <b>${esc(name)}</b> may be stuck: ${esc(what)}.`, `🤖 Агент <b>${esc(name)}</b>, похоже, завис: ${esc(what)}.`), stuckForClaude(name, reason))
+      return toHead(key, tr(`🤖 Agent <b>${topicA(key, name)}</b> may be stuck: ${esc(what)}.`, `🤖 Агент <b>${topicA(key, name)}</b>, похоже, завис: ${esc(what)}.`), stuckForClaude(name, reason))
     }
     const { chatId, topicId } = parseKey(key)
     background(keepLoud(() => api.sendMessage(chatId, tr(`🔁 <b>The task may be stuck:</b> ${esc(what)}. It is still running.`, `🔁 <b>Похоже, задача застряла:</b> ${esc(what)}. Она ещё идёт.`), {
@@ -2146,7 +2181,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const key = topicKey(ctx.chat.id, topicId)
     const t = topics.get(key)
     if (workspaces.get(ctx.chat.id)?.plain) return ctx.reply(NO_TOPICS())
-    if (t.head) return sendRich(ctx.chat.id, topicId, tr(`🤖 This is the agent **${t.workerName}** · 🧠 ${mindOf(t)}. A head in another topic runs it; only a regular topic can start agents.`, `🤖 Это агент **${t.workerName}** · 🧠 ${mindOf(t)}. Им управляет хед из другого топика; запускать агентов может только обычный топик.`))
+    if (t.head) return sendRich(ctx.chat.id, topicId, tr(`🤖 This is the agent **${t.workerName}** · 🧠 ${mindOf(t)}. ${topicMd(t.head, 'A head in another topic')} runs it; only a regular topic can start agents.`, `🤖 Это агент **${t.workerName}** · 🧠 ${mindOf(t)}. Им управляет ${topicMd(t.head, 'хед из другого топика')}; запускать агентов может только обычный топик.`))
     const team = workersOf(key)
     const waiting = t.waitingAgents ?? []
     if (!team.length && !waiting.length) {
@@ -2156,7 +2191,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       tr('### Agents', '### Агенты'),
       [tr('| Agent | Where | Model | Now |', '| Агент | Где | Модель | Сейчас |'), '|:--|:--|:--|:--|', ...team.map(k => {
         const w = topics.get(k)
-        return `| 🤖 ${w.workerName} | ${placeOf(w)} | ${mindOf(w)} | ${STATE_LABEL[stateOf(k)]} |`
+        return `| 🤖 ${topicMd(k, w.workerName ?? '')} | ${placeOf(w)} | ${mindOf(w)} | ${STATE_LABEL[stateOf(k)]} |`
       }), ...waiting.map(w => `| ⏳ ${w.name} | — | — | ${tr(`waits for ${w.after}`, `ждёт ${w.after}`)} |`)].join('\n'),
       tr('The head starts agents, gives them tasks and removes them. You can look in on an agent and answer it in its topic.', 'Хед сам запускает агентов, даёт им задачи и удаляет их. Заглянуть к агенту и ответить ему можно в его топике.'),
     ].join('\n\n'))
@@ -2273,7 +2308,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const no = tr('Cancel', 'Отмена')
     const choice = await sendChoice(chatId, topicId, [
       tr(`**Delete these topics?**`, `**Удалить эти топики?**`),
-      chosen.map(([k, t]) => `- ${mdText(topicLabel(k, t))}`).join('\n'),
+      chosen.map(([k, t]) => `- ${topicMd(k, topicLabel(k, t))}`).join('\n'),
       tr('All their messages and Claude sessions on the server will be gone, agents of a head too. Projects and files on computers stay.', 'Пропадут все их сообщения и сессии Claude на сервере, вместе с агентами хеда. Проекты и файлы на компьютерах останутся.'),
     ].join('\n\n'), [[{ text: yes, data: `dlt:yes:${id}`, style: 'danger' }, { text: no, data: `dlt:no:${id}` }]], new InlineKeyboard().text(yes, `dlt:yes:${id}`).text(no, `dlt:no:${id}`))
     offers.open(key, 'delete', choice?.messageId)
@@ -3571,14 +3606,14 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const busyTasks = () => {
       const all = [...live].filter(([, l]) => l.busy || l.preparing).map(([k]) => {
         const { chatId: chat, topicId: topic } = parseKey(k)
-        return { topic: topic ? topicLabel(k, topics.get(k)) : tr('general chat', 'общий чат'), where: workspaces.get(chat)?.title }
+        return { key: k, topic: topic ? topicLabel(k, topics.get(k)) : tr('general chat', 'общий чат'), where: workspaces.get(chat)?.title }
       })
       const shown = all.slice(0, 6)
       const more = all.length > shown.length ? `+${all.length - shown.length}` : ''
       return {
         key: JSON.stringify(all),
-        md: [...shown.map(x => `- ${mdText(x.topic)}${x.where ? ` · _${mdText(x.where)}_` : ''}`), ...(more ? [`- ${more}`] : [])].join('\n'),
-        html: [...shown.map(x => `${esc(x.topic)}${x.where ? ` <i>· ${esc(x.where)}</i>` : ''}`), ...(more ? [more] : [])].join(', '),
+        md: [...shown.map(x => `- ${topicMd(x.key, x.topic)}${x.where ? ` · _${mdText(x.where)}_` : ''}`), ...(more ? [`- ${more}`] : [])].join('\n'),
+        html: [...shown.map(x => `${topicA(x.key, x.topic)}${x.where ? ` <i>· ${esc(x.where)}</i>` : ''}`), ...(more ? [more] : [])].join(', '),
       }
     }
     const w: NonNullable<typeof updateWait> = updateWait = { cancelled: false }
@@ -5714,7 +5749,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     if (from.head === toKey) return 'Not delivered: that topic is your head. The final answer of this turn reaches it as your report: put this there.'
     const toTopic = parseKey(toKey).topicId
     const name = topicLabel(key, from)
-    const shown = await foldedMessage(chatId, toTopic, `<b>${tr('✉️ From the topic', '✉️ Из топика')} ${esc(name)}</b>`, p.text)
+    const shown = await foldedMessage(chatId, toTopic, `<b>${tr('✉️ From the topic', '✉️ Из топика')} ${topicA(key, name)}</b>`, p.text)
     // Telegram doesn't tell a bot that a topic was deleted: here is where that shows
     if (!shown) return `Not delivered: the topic «${p.topic}» can't be reached. It may have been deleted.`
     topicWakes.set(chatId, n)
@@ -5874,7 +5909,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       : state === 'idle' && reported ? tr(`report at ${clockOf(reported)}`, `отчёт в ${clockOf(reported)}`)
       : word.join(' ')
     const what = [t.workerDoing && trunc(t.workerDoing, 60), state === 'working' && l?.checklist?.length && stepOf(l.checklist)].filter(Boolean).join(' → ')
-    return `> ${icon} **${mdText(t.workerName ?? '?')}** · ${when} · ${mdText(modelLabel(modelOf(t)))}${what ? `  \n> ${mdText(what)}` : ''}`
+    return `> ${icon} **${topicMd(k, t.workerName ?? '?')}** · ${when} · ${mdText(modelLabel(modelOf(t)))}${what ? `  \n> ${mdText(what)}` : ''}`
   }
   function boardMarkdown(headKey: string) {
     const team = workersOf(headKey)
@@ -6722,29 +6757,38 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       return { text: '', note: tr('⚠️ previous session not found', '⚠️ прошлая сессия не найдена') }
     }
 
-    // §7: a spent plan limit or a lost sign-in gets a plain status and, if another profile is signed in,
-    // a button to carry on there. Switched by itself only in a night shift: nobody is there to tap it
+    // §7: a spent plan limit moves the topic to a signed-in profile with room and the task goes on there, by day as
+    // in a night shift. With none, or a lost sign-in, it gets a plain status and a button for each other profile
     const profileName = profiles.nameOf(t.profile)
     const signIn = ['authentication_failed', 'oauth_org_not_allowed', 'account_on_hold', 'verification_required', 'billing_error'].includes(res.errorKind ?? '')
     const limitHit = res.errorKind === 'rate_limit' || (!!res.isError && !signIn && profiles.lastLimit(profileName)?.status === 'rejected')
     // Not a topic working in Chrome: its browser is signed in to this profile's account, and another wouldn't see it
     // Stopped by the bot itself at paid extra usage counts the same: the plan's limit ran out
-    const nightOn = overage ? shiftOf(key) : !res.aborted && limitHit && !topics.get(key).browser ? shiftOf(key) : undefined
-    const spare = overage ?? (nightOn ? await spareProfile(profileName) : undefined)
-    if (spare && nightOn) {
+    const atLimit = !res.aborted && limitHit && !topics.get(key).browser && mayMoveAtLimit(key)
+    const spare = overage ?? (atLimit ? await spareProfile(profileName) : undefined)
+    if (spare) {
+      const nightOn = shiftOf(key)
+      const was = topics.get(key)
       const carried = await switchProfile(key, spare, true)
-      shifts.change(nightOn.id, { profilesUsed: [...new Set([...(nightOn.profilesUsed ?? []), profileName, spare])], moved: [...new Set([...(nightOn.moved ?? []), key])] })
-      log.info('night shift: profile switched at the limit', { key, from: profileName, to: spare, carried, overage: !!overage })
+      movedAtLimit(key)
+      // A night shift sends its topics home when it ends. By day the topic goes back once the limit has reset, and a
+      // topic already away from home keeps the home it had
+      const backAt = untilOf(epochMs(profiles.lastLimit(profileName)?.resetsAt), Date.now())
+      if (nightOn) shifts.change(nightOn.id, { profilesUsed: [...new Set([...(nightOn.profilesUsed ?? []), profileName, spare])], moved: [...new Set([...(nightOn.moved ?? []), key])] })
+      else topics.set(key, { profileBack: was.profileBack ?? { to: profileName, at: backAt, own: !!was.profileOwn } })
+      log.info('profile switched at the limit', { key, from: profileName, to: spare, carried, overage: !!overage, night: !!nightOn })
+      const session = carried ? '' : tr(', in a new session', ', в новой сессии')
       background(api.sendMessage(chatId, overage
-        ? tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached and paid extra usage began: the night shift goes on on <b>${esc(spare)}</b>${carried ? '' : ', in a new session'}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан, пошёл платный Extra usage: ночная смена продолжает на <b>${esc(spare)}</b>${carried ? '' : ', в новой сессии'}.`)
-        : tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached: the night shift goes on on <b>${esc(spare)}</b>${carried ? '' : ', in a new session'}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан: ночная смена продолжает на <b>${esc(spare)}</b>${carried ? '' : ', в новой сессии'}.`),
+        ? tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached and paid extra usage began: the night shift goes on on <b>${esc(spare)}</b>${session}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан, пошёл платный Extra usage: ночная смена продолжает на <b>${esc(spare)}</b>${session}.`)
+        : nightOn
+          ? tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached: the night shift goes on on <b>${esc(spare)}</b>${session}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан: ночная смена продолжает на <b>${esc(spare)}</b>${session}.`)
+          : tr(`🔀 The limit of <b>${esc(profileName)}</b> is reached: I go on on <b>${esc(spare)}</b>${session}, and back after it resets, ${resetTag(backAt)}.`, `🔀 Лимит <b>${esc(profileName)}</b> исчерпан: продолжаю на <b>${esc(spare)}</b>${session}, вернусь после сброса, ${resetTag(backAt)}.`),
       { ...where(topicId), ...HTML, disable_notification: true }).catch(() => {}))
       enqueue(chatId, topicId, prompt, { images, reply: false, fromMode: l.modeCap, ownAnswers: l.ownerSpoke })
       return { text: '', note: tr(`🔀 on ${spare}`, `🔀 на ${spare}`) }
     }
     if (!res.aborted && (limitHit || signIn)) {
-      const last = profiles.lastLimit(profileName)
-      const reset = last?.resetsAt ? (last.resetsAt < 1e12 ? last.resetsAt * 1000 : last.resetsAt) : undefined
+      const reset = epochMs(profiles.lastLimit(profileName)?.resetsAt)
       const others = []
       for (const n of profiles.list()) if (n !== profileName && (await profiles.status(n)).loggedIn) others.push(n)
       const id = permSeq++
@@ -6759,7 +6803,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       if (until) {
         pauses.add({ key, until, profile: profileName, text: prompt, attempts, fromMode: l.modeCap, images })
         // A head that waits for a report would wait in silence: no report comes until the reset
-        if (t.head) toHead(key, tr(`⏸ Agent <b>${esc(t.workerName ?? '')}</b> ran into the limit and goes on by itself ${resetTag(until)}.`, `⏸ Агент <b>${esc(t.workerName ?? '')}</b> упёрся в лимит и продолжит сам ${resetTag(until)}.`), `[Agent “${t.workerName}” ran into the usage limit and goes on by itself after the reset, ${new Date(until).toISOString()}. Its report comes after that. Nothing to do now unless it can't wait.]`)
+        if (t.head) toHead(key, tr(`⏸ Agent <b>${topicA(key, t.workerName ?? '')}</b> ran into the limit and goes on by itself ${resetTag(until)}.`, `⏸ Агент <b>${topicA(key, t.workerName ?? '')}</b> упёрся в лимит и продолжит сам ${resetTag(until)}.`), `[Agent “${t.workerName}” ran into the usage limit and goes on by itself after the reset, ${new Date(until).toISOString()}. Its report comes after that. Nothing to do now unless it can't wait.]`)
         kb.text(tr('⏹ Don\'t go on', '⏹ Не продолжать'), 'lmt:off').row()
       }
       await keepLoud(() => sendRich(chatId, topicId, [

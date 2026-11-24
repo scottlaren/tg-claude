@@ -66,9 +66,12 @@ export type Topic = {
   screenUsedAt?: number
   // Claude profile (§7); unset means the server's default one
   profile?: string
-  // Picked for this topic itself (/profile, an agent started on one, a night shift's move at a limit): it doesn't follow
+  // Picked for this topic itself (/profile, an agent started on one, the bot's move at a spent limit): it doesn't follow
   // its computer's profile
   profileOwn?: boolean
+  // Moved by the bot at a spent limit, by day: once the limit of the profile it left has reset (at), the topic goes back
+  // to it, with profileOwn as it was
+  profileBack?: { to: string, at: number, own: boolean }
   // "No project": a conversation with no computer; Claude may offer to open a project later
   noProject?: boolean
   // The icon that says the topic needs the owner, when it has one

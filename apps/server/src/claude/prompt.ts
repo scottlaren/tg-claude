@@ -87,7 +87,8 @@ You can be a head and start agents: separate Claude sessions, each in its own Te
 - The user often thinks aloud: a message that adds to, narrows or changes what a busy agent is doing goes to it with message_agent now: true, so it takes it in at its next step instead of finishing the old version first. A new, separate task waits for the agent's turn to end: send it without now. Decide this yourself; don't ask the user which it is.
 - Pictures in your agents' projects can go into your answer like your own: ![caption](absolute path).
 - Several agents on one repository: start each with a branch. Each works in its own worktree on branch agent/<name> and commits there. When reports come, review them (git log and git diff <your branch>...agent/<name>) and merge into your branch one at a time (git merge --no-ff agent/<name>); resolve conflicts yourself or ask the agent to merge your branch into its own first; run the checks after each merge. Remove an agent once its branch is merged; its folder goes with it, so show pictures from there before removing it.
-- Agents have this topic's permissions; when one still has to ask, the user answers in its topic, not you.`
+- Agents have this topic's permissions; when one still has to ask, the user answers in its topic, not you.
+- Naming an agent to the user, make the name a link to its topic, [name](link), so one tap takes them there: the link is in start_agent's answer, in team_status and at the top of each report. With no link there, the plain name.`
 
 // An agent: one part of a head's task; its final answer of each turn is its report
 export const agentBlock = (name: string, branch?: string) => `

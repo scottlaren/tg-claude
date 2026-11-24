@@ -38,13 +38,27 @@ export function createOffers() {
   }
 }
 
-// Topics of a group have links. A private chat with a bot has none: Telegram documents message links for groups and
-// channels only (core.telegram.org/api/links), so such a line is a name rather than a dead link
+// Topics of a group have links, to a message in them too. Telegram documents message links for groups and channels
+// only (core.telegram.org/api/links): the private chat with the bot is topicWay's part
 export function topicLink(chatId: number, topicId?: number, messageId?: number) {
   const id = String(chatId)
   if (!id.startsWith('-100')) return null
   const path = topicId ? [topicId, ...(messageId ? [messageId] : [])] : [messageId ?? 1]
   return `https://t.me/c/${id.slice(4)}/${path.join('/')}`
+}
+
+// The same, and for a topic in the private chat with the bot too: those have links since Bot API 10.4
+// (t.me/<bot>/<topic>), to the topic only
+export const topicWay = (chatId: number, topicId?: number, botUser?: string, messageId?: number) =>
+  topicLink(chatId, topicId, messageId) ?? (chatId > 0 && topicId && botUser ? `https://t.me/${botUser}/${topicId}` : undefined)
+
+// grammY throws on botInfo before the bot has started; a name then goes without its link
+export const botUserOf = (bot: Pick<Bot, 'botInfo'>) => {
+  try {
+    return bot.botInfo?.username
+  } catch {
+    return undefined
+  }
 }
 
 const LINES_MAX = 30
@@ -95,11 +109,11 @@ export type Names = {
 
 // Grouped by workspace in the style of the update card. What waits comes first, in each group and among the groups:
 // that is where a tap is needed. A long card loses running lines before it loses waiting ones
-export function overviewHtml(view: { running: Running[], waiting: Waiting[], queued?: Queued[] }, names: Names, here: number, now = Date.now()) {
+export function overviewHtml(view: { running: Running[], waiting: Waiting[], queued?: Queued[] }, names: Names, here: number, now = Date.now(), botUser?: string) {
   const line = (key: string, icon: string, what: string, messageId?: number) => {
     const { chatId, topicId } = names.where(key)
     const name = esc(names.masked(key, names.topic(key)))
-    const url = topicLink(chatId, topicId, messageId)
+    const url = topicWay(chatId, topicId, botUser, messageId)
     return { chatId, waits: icon === '🔔', html: `${icon} ${url ? `<a href="${url}">${name}</a>` : name} — ${esc(names.masked(key, what))}` }
   }
   const all = [
@@ -116,14 +130,13 @@ export function overviewHtml(view: { running: Running[], waiting: Waiting[], que
   return [...shown, ...(all.length > LINES_MAX ? [`… +${all.length - LINES_MAX}`] : [])].join('\n\n')
 }
 
-// The same view as rows for the widget: what it is, then where, each with the way to its topic. Topics in the private
-// chat with the bot have links too since Bot API 10.4 (t.me/<bot>/<topic>)
+// The same view as rows for the widget: what it is, then where, each with the way to its topic
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 export function nowRowsOf(view: { running: Running[], waiting: Waiting[], queued?: Queued[] }, names: Names, botUser?: string): NowRow[] {
   const at = (key: string, messageId?: number) => {
     const { chatId, topicId } = names.where(key)
     const name = names.masked(key, names.topic(key))
-    const link = topicLink(chatId, topicId, messageId) ?? (chatId > 0 && topicId && botUser ? `https://t.me/${botUser}/${topicId}` : undefined)
+    const link = topicWay(chatId, topicId, botUser, messageId)
     return { topic: chatId < 0 ? tr(`${name} in ${names.place(chatId)}`, `${name} в ${names.place(chatId)}`) : name, link }
   }
   return [
@@ -207,10 +220,10 @@ export function createOverview({ bot, source, names, addedBy, send, edit, sendWi
   // The private chat gets a widget that keeps itself current; false when it couldn't be sent, and the card goes instead
   sendWidget?: (chatId: number, topicId: number | undefined, rows: NowRow[]) => Promise<boolean>,
 }) {
-  const card = (ctx: Context) => richLines(overviewHtml(collectOverview(source, overviewScope(ctx.chat!, ctx.from!.id, addedBy)), names, ctx.chat!.id))
+  const card = (ctx: Context) => richLines(overviewHtml(collectOverview(source, overviewScope(ctx.chat!, ctx.from!.id, addedBy)), names, ctx.chat!.id, Date.now(), botUserOf(bot)))
   const rows = (): RichButton[][] => [[{ text: tr('🔄 Refresh', '🔄 Обновить'), data: 'now:r' }]]
   // What one account sees from its private chat: its own chats and the workspaces it added
-  const nowRows = (userId: number) => nowRowsOf(collectOverview(source, overviewScope({ id: userId, type: 'private' }, userId, addedBy)), names, bot.botInfo?.username)
+  const nowRows = (userId: number) => nowRowsOf(collectOverview(source, overviewScope({ id: userId, type: 'private' }, userId, addedBy)), names, botUserOf(bot))
   bot.command('now', async ctx => {
     const topicId = ctx.msg.is_topic_message ? ctx.msg.message_thread_id : undefined
     if (ctx.chat.type === 'private' && sendWidget && await sendWidget(ctx.chat.id, topicId, nowRows(ctx.from!.id))) return

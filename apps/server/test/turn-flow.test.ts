@@ -333,6 +333,20 @@ test('an agent can propose a schedule; its scheduled runs answer in its topic an
   await until(() => h.said().some(x => /Report from agent/.test(x)))
 })
 
+test('an agent named in its head\'s topic is the way to its own: its name in a report\'s title is a link there', async () => {
+  const h = start()
+  h.topics.set(KEY, { mode: 'all', head: `${GROUP}:9`, workerName: 'Ads' })
+  h.topics.set(`${GROUP}:9`, { workers: [KEY] })
+  await h.text('count them')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  h.runs[0].finish({ text: 'counted' })
+  await turn
+  await until(() => h.said().some(x => /Report from agent/.test(x)))
+  const link = `https://t.me/c/${String(GROUP).slice(4)}/${KEY.split(':')[1]}`
+  assert.ok(h.said().some(x => x.includes(`Report from agent <b><a href="${link}">Ads</a></b>`)), h.said().join(' | '))
+})
+
 test('a picture from another project of the computer comes through it; one not there yet is looked for again and sent after', async () => {
   const { createHash } = await import('node:crypto')
   const h = start({ cfg: { mediaRetryMs: 300 } })
@@ -592,12 +606,73 @@ test('paid extra usage after the limit: a night shift stops and goes on on anoth
   }
 })
 
-test('outside a night shift a spent limit still waits for the user\'s tap', async () => {
+test('by day too a spent limit moves the topic to a profile with room; it goes home once that limit has reset', async () => {
+  const carried: string[] = []
+  const reset = Math.round(Date.now() / 1000) + 3600
+  let spent = true
+  let later: number | undefined
+  const h = start({
+    profiles: {
+      list: () => ['main', 'work'],
+      nameOf: (n?: string) => n ?? 'main',
+      lastLimit: (n: string) => (n === 'main' && spent ? { status: 'rejected', resetsAt: later ?? reset, at: Date.now() } : undefined),
+      carry: (_id: string, from: string, to: string) => (carried.push(`${from}>${to}`), true),
+    },
+  })
+  await h.text('build the level')
+  const first = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  h.runs[0].finish({ text: '', isError: true, errorKind: 'rate_limit' } as never)
+  await first
+  assert.equal(h.topics.get(KEY).profile, 'work')
+  assert.equal(h.topics.get(KEY).sessionId, 'sess-1', 'the conversation went along')
+  assert.equal(h.topics.get(KEY).profileOwn, true, 'its computer\'s profile does not pull it back')
+  assert.deepEqual(h.topics.get(KEY).profileBack, { to: 'main', at: reset * 1000, own: false })
+  assert.deepEqual(carried, ['main>work'])
+  assert.ok(h.said().some(s => /I go on on <b>work<\/b>|продолжаю на <b>work<\/b>/.test(s)), h.said().join(' | '))
+  assert.ok(!h.said().some(s => /limit of the profile|Лимит профиля/.test(s)), 'no pause')
+  assert.ok(!JSON.stringify(h.calls).includes('pfr:'), 'no button to tap')
+  // The same message goes again, now on work
+  await until(() => h.runs.length === 2)
+  assert.match(String(h.runs[1].o.prompt), /build the level/)
+  h.runs[1].finish()
+  await until(() => !h.liveOf(KEY).busy)
+
+  const turn = async (text: string) => {
+    const n = h.runs.length
+    await h.text(text)
+    const done = h.processQueue(KEY)
+    await until(() => h.runs.length > n)
+    h.runs[n].finish()
+    await done
+  }
+  // Before the reset it stays
+  await turn('one')
+  assert.equal(h.topics.get(KEY).profile, 'work')
+  // The time came, but the limit turned out longer: the return is put off
+  later = reset + 7200
+  h.topics.set(KEY, { profileBack: { to: 'main', at: Date.now() - 1, own: false } })
+  await turn('two')
+  assert.equal(h.topics.get(KEY).profile, 'work')
+  assert.equal(h.topics.get(KEY).profileBack?.at, later * 1000)
+  // The limit has reset: home, and its computer's profile leads again
+  spent = false
+  h.topics.set(KEY, { profileBack: { to: 'main', at: Date.now() - 1, own: false } })
+  await turn('three')
+  assert.equal(h.topics.get(KEY).profile, 'main')
+  assert.equal(h.topics.get(KEY).profileOwn, undefined)
+  assert.equal(h.topics.get(KEY).profileBack, undefined)
+  assert.deepEqual(carried, ['main>work', 'work>main'])
+  assert.ok(h.said().some(s => /has reset: this topic is back on it|сбросился: топик снова на нём/.test(s)), h.said().join(' | '))
+})
+
+test('a spent limit with no profile with room waits for the reset and offers the others', async () => {
   const h = start({
     profiles: {
       list: () => ['main', 'work'],
       nameOf: (n?: string) => n ?? 'main',
       lastLimit: (n: string) => (n === 'main' ? { status: 'rejected', resetsAt: Date.now() / 1000 + 3600, at: Date.now() } : undefined),
+      usage: async () => ({ plan: null, fiveHour: { utilization: 99, resetsAt: null }, sevenDay: { utilization: 30, resetsAt: null }, models: [] }),
     },
   })
   await h.text('build the level')
@@ -606,7 +681,25 @@ test('outside a night shift a spent limit still waits for the user\'s tap', asyn
   h.runs[0].finish({ text: '', isError: true, errorKind: 'rate_limit' } as never)
   await turn
   assert.equal(h.topics.get(KEY).profile, undefined)
+  assert.equal(h.topics.get(KEY).profileBack, undefined)
+  assert.ok(h.said().some(s => /limit of the profile|Лимит профиля/.test(s)), h.said().join(' | '))
   assert.ok(JSON.stringify(h.calls).includes('pfr:work:'))
+})
+
+test('two profiles that both refuse never pass a task back and forth for long: after two moves it waits', async () => {
+  const h = start({ profiles: { list: () => ['main', 'work'], nameOf: (n?: string) => n ?? 'main', carry: () => true } })
+  await h.text('build the level')
+  h.processQueue(KEY)
+  const on: (string | undefined)[] = []
+  for (let i = 0; i < 3; i++) {
+    await until(() => h.runs.length > i)
+    on.push(h.topics.get(KEY).profile)
+    h.runs[i].finish({ text: '', isError: true, errorKind: 'rate_limit' } as never)
+  }
+  await until(() => h.said().some(s => /limit of the profile|Лимит профиля/.test(s)))
+  assert.deepEqual(on, [undefined, 'work', 'main'])
+  assert.equal(h.topics.get(KEY).profile, 'main', 'it stays where the third refusal found it')
+  assert.equal(h.runs.length, 3)
 })
 
 test('a topic follows its computer\'s Claude profile, the conversation carried; one that picked its own keeps it until told back', async () => {

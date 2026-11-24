@@ -2,6 +2,16 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## Unreleased
+
+- **A spent limit no longer stops the work.** When a profile's limit runs out, the topic moves to another signed-in profile with room and goes on with the same task and conversation, by day as in a night shift, for agents too. Once the limit has reset, the topic goes back to its own profile.
+- **Names lead to their topics.** Wherever the bot names an agent or another topic (a report, a spent limit, a stuck task, the team's board, /team, /now, /schedule, a message from another topic), the name is a link: one tap opens that topic. The head links its agents in its own answers too.
+
+### Русский
+
+- **Кончившийся лимит больше не останавливает работу.** Когда лимит профиля исчерпан, топик сам переходит на другой профиль со свободным лимитом и продолжает ту же задачу с той же перепиской: днём так же, как в ночной смене, и у агентов тоже. После сброса лимита топик возвращается на свой профиль.
+- **Имена ведут в свои топики.** Везде, где бот называет агента или другой топик (отчёт, исчерпанный лимит, зависшая задача, доска команды, /team, /now, /schedule, сообщение из другого топика), имя стало ссылкой: один тап открывает этот топик. Хед тоже даёт ссылки на своих агентов в ответах.
+
 ## 0.18.0
 
 - **The code is open.** The repository is public under the PolyForm Noncommercial license: free for personal and other noncommercial use. A server now installs without a GitHub token.

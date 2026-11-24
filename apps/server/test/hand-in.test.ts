@@ -459,7 +459,7 @@ test('/now is in the command list', async () => {
   assert.deepEqual(h.cards(), [])
 })
 
-test('/now: groups by workspace, links in a group, a name without a link in the private chat', async () => {
+test('/now: groups by workspace, each topic a link: a group\'s, and the private chat\'s through the bot\'s name', async () => {
   const h = start()
   h.workspaces.add(GROUP, { title: 'Roblox <3', addedBy: OWNER })
   h.topics.set(`${GROUP}:7`, { title: 'Map' })
@@ -470,10 +470,9 @@ test('/now: groups by workspace, links in a group, a name without a link in the 
   await h.message(OWNER, OWNER, 1, '/now')
   const text = card(h)
   assert.match(text, /<b>Roblox &lt;3<\/b>\n⚙️ <a href="https:\/\/t\.me\/c\/3555000111\/7">Map<\/a> — working/)
-  assert.match(text, /<b>Private chat<\/b>\n⚙️ Bot — 🤔 Reading… · 1m 5s/)
+  assert.match(text, /<b>Private chat<\/b>\n⚙️ <a href="https:\/\/t\.me\/example_bot\/5">Bot<\/a> — 🤔 Reading… · 1m 5s/)
   assert.match(text, /\n\n/, 'a blank line between groups')
   assert.ok(text.indexOf('Private chat') < text.indexOf('Roblox'), 'where they are asking comes first')
-  assert.doesNotMatch(text, /<a [^>]*>Bot/)
 })
 
 test('/now: each state that waits on a tap, with a link to the message when it is known', async () => {
