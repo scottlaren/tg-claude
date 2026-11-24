@@ -2,7 +2,7 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
-## Unreleased
+## 0.18.3
 
 - **The offer to move a cloud project comes once a day.** “The computer is online. Move the project from the cloud there?” used to return every 12 hours for each topic, and after every server update. Now each computer asks once a day at most, and an update doesn't start it again.
 - **A move to another profile is quiet.** A task that moved on at a spent limit left 💔 on its message and a line about a queue, and an agent's head got an empty report that could cancel the agents waiting for it. Now there is one line saying where the task goes on, and a scheduled run stays a scheduled run.
