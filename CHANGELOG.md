@@ -2,7 +2,7 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
-## Unreleased
+## 0.18.1
 
 - **A spent limit no longer stops the work.** When a profile's limit runs out, the topic moves to another signed-in profile with room and goes on with the same task and conversation, by day as in a night shift, for agents too. Once the limit has reset, the topic goes back to its own profile.
 - **Names lead to their topics.** Wherever the bot names an agent or another topic (a report, a spent limit, a stuck task, the team's board, /team, /now, /schedule, a message from another topic), the name is a link: one tap opens that topic. The head links its agents in its own answers too.
