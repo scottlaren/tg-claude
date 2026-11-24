@@ -1,0 +1,6 @@
+# Trying the image on one machine without a domain: the gateway on localhost, no Caddy
+#   docker compose -f compose.yml -f compose.local.yml up -d --build server
+services:
+  server:
+    ports:
+      - "127.0.0.1:8787:8787"

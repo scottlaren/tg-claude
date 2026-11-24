@@ -1,0 +1,92 @@
+# The server and Caddy in front of it: Caddy gets the HTTPS certificate for DOMAIN by itself, computers
+# connect to wss://DOMAIN/device. Settings and secrets come from .env next to this file (the installer writes it)
+
+# What a container prints is kept to 3 files of 10 MB: a small VPS disk never fills with it
+x-logs: &logs
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        TGCV_VERSION: ${TGCV_VERSION:-unknown}
+    image: tgcv-server
+    restart: unless-stopped
+    logging: *logs
+    # Public resolvers: the firewall cuts every private address, a provider's resolver too (tgcv-firewall)
+    dns: [1.1.1.1, 9.9.9.9]
+    env_file: .env
+    environment:
+      # The server checks from inside that the VPS's firewall is there (apps/server/src/sandbox.ts)
+      SANDBOX: "1"
+      # Shared with the update helper on the VPS (deploy/tgcv-update.sh): a request goes in, the outcome comes back
+      UPDATE_DIR: /update
+      TGCV_REPO: ${TGCV_REPO:-https://github.com/scottlaren/tg-claude.git}
+    volumes:
+      - data:/data
+      - backups:/backups
+      - /var/lib/tgcv/update:/update
+    networks: [default, cloud]
+  # The cloud workspace, on with COMPOSE_PROFILES=cloud in .env: an always-on computer for code. Only what it
+  # needs reaches it from .env, never the bot token or the backup key
+  cloud:
+    profiles: ["cloud"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.cloud
+      args:
+        TGCV_VERSION: ${TGCV_VERSION:-unknown}
+    image: tgcv-cloud
+    restart: unless-stopped
+    logging: *logs
+    dns: [1.1.1.1, 9.9.9.9]
+    environment:
+      AGENT_SERVER: ws://server:8787/device
+      CLOUD_KEY: ${CLOUD_KEY:-}
+    volumes:
+      - cloud:/home/node
+    # A network of its own: the server's gateway and the internet, nothing else of the VPS (tgcv-firewall)
+    networks: [cloud]
+    # Builds and tests in the cloud can't starve the bot
+    mem_limit: ${CLOUD_MEMORY:-2g}
+    cpus: ${CLOUD_CPUS:-1}
+    pids_limit: 2048
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      - server
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    logging: *logs
+    dns: [1.1.1.1, 9.9.9.9]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy:/data
+    depends_on:
+      - server
+volumes:
+  data:
+  backups:
+  caddy:
+  cloud:
+# Both fixed, so the firewall rules on the VPS can name them
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.213.251.0/24
+  cloud:
+    ipam:
+      config:
+        - subnet: 10.213.250.0/24

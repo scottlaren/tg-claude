@@ -1,0 +1,13 @@
+{
+  "serverUrl": "ws://127.0.0.1:8787/device",
+  "deviceId": "pc",
+  "deviceKey": "same value as in DEVICE_KEYS on the server",
+  "deviceName": "PC",
+  "projects": [
+    { "id": "sandbox", "name": "Sandbox", "path": "C:\\Users\\you\\Projects\\sandbox" }
+  ],
+  "mcpServers": {
+    "blender": { "command": "C:\\path\\to\\blender-mcp.exe", "args": [] },
+    "Roblox_Studio": { "command": "cmd.exe", "args": ["/c", "%LOCALAPPDATA%\\Roblox\\mcp.bat"] }
+  }
+}

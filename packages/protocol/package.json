@@ -1,0 +1,12 @@
+{
+  "name": "@tgcv/protocol",
+  "version": "0.17.9",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  }
+}

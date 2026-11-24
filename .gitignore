@@ -1,0 +1,13 @@
+node_modules/
+.env
+data/
+agent.config.json
+*.log
+agent.state.json
+agent.chrome.json
+agent.mcp.json
+agent.locked
+backups/
+data-restored-*/
+test-e2e/out/
+docs/roadmap.md

@@ -1,0 +1,16 @@
+{
+  // Node 24 runs .ts directly by stripping types; tsc is only the type checker
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["packages/*/src", "packages/*/test", "apps/*/src", "apps/*/test", "apps/*/live", "test-e2e"]
+}

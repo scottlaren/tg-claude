@@ -1,0 +1,12 @@
+# Only the server's code goes into the image: no secrets, no local state, no dependencies from this machine
+.git
+node_modules
+**/node_modules
+data
+data-restored-*
+backups
+.env
+agent.config.json
+agent.state.json
+agent.chrome.json
+*.log

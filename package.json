@@ -1,0 +1,33 @@
+{
+  "name": "tg-claude",
+  "version": "0.17.9",
+  "private": true,
+  "type": "module",
+  "description": "Personal Claude client with a Telegram interface: VPS server + Windows/macOS executors",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "server": "node --env-file-if-exists=.env apps/server/src/main.ts",
+    "agent": "node apps/agent/src/main.ts",
+    "login": "node --env-file-if-exists=.env apps/server/src/login.ts",
+    "live:stop": "node --env-file-if-exists=.env apps/server/live/stop-turn.ts",
+    "test": "node --import ./test-support/tmp-sandbox.ts --test --test-timeout=120000 \"packages/*/test/*.test.ts\" \"apps/*/test/*.test.ts\"",
+    "test:e2e": "node --test --test-concurrency=1 \"test-e2e/*.e2e.ts\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "live:figma": "node --env-file-if-exists=.env apps/server/live/figma-probe.ts",
+    "live:chrome": "node --env-file-if-exists=.env apps/server/live/chrome-probe.ts",
+    "live:browsers": "node --env-file-if-exists=.env apps/server/live/chrome-list.ts",
+    "backup": "node --env-file-if-exists=.env apps/server/src/backup.ts"
+  },
+  "author": "scottlaren",
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2"
+  }
+}

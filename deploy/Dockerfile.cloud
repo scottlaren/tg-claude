@@ -1,0 +1,30 @@
+# The cloud workspace: an always-on computer for code next to the server. It runs the same executor as the
+# user's computers and connects to the server with CLOUD_KEY; projects and the GitHub sign-in live in the
+# /home/node volume. A container of its own: commands Claude runs here never reach the bot token, keys or data
+FROM node:24-bookworm-slim
+ARG TGCV_VERSION=unknown
+# No root here: global npm packages and pip --user go to the home folder
+ENV TGCV_VERSION=$TGCV_VERSION \
+    NODE_ENV=production \
+    AGENT_CONFIG=/home/node/.tgcv/agent.config.json \
+    AGENT_STATE=/home/node/.tgcv/agent.state.json \
+    CLOUD_WORKSPACE=/home/node/workspace \
+    NPM_CONFIG_PREFIX=/home/node/.npm-global \
+    PATH=/home/node/.npm-global/bin:/home/node/.local/bin:$PATH
+# What code work needs: git and GitHub CLI, Python, compilers for native npm and pip packages, everyday tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git gh openssh-client ca-certificates curl wget zip unzip xz-utils jq ripgrep less procps \
+      python3 python3-pip python3-venv build-essential \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY packages/protocol/package.json packages/protocol/
+COPY apps/server/package.json apps/server/
+COPY apps/agent/package.json apps/agent/
+RUN npm ci --omit=dev --workspace @tgcv/agent --workspace @tgcv/protocol && npm cache clean --force
+COPY packages/protocol packages/protocol
+COPY apps/agent apps/agent
+USER node
+WORKDIR /home/node
+VOLUME ["/home/node"]
+CMD ["node", "/app/apps/agent/src/main.ts", "cloud"]

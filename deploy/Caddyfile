@@ -1,0 +1,26 @@
+# Certificate from Let's Encrypt for DOMAIN (a real domain, or <ip>.sslip.io when there is none).
+# The computers' addresses stop here. Caddy keeps no access log, and its own log entries (errors such as a 502
+# while the server restarts) lose the client's address, port and headers before they are written. The server
+# behind gets no X-Forwarded-For / X-Real-IP / Forwarded: neither the bot nor Claude, nor anyone who takes over
+# the server container, learns where the computers connect from
+{
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip delete
+				request>remote_port delete
+				request>client_ip delete
+				request>headers delete
+			}
+		}
+	}
+}
+
+{$DOMAIN} {
+	reverse_proxy server:8787 {
+		header_up -X-Forwarded-For
+		header_up -X-Real-IP
+		header_up -Forwarded
+	}
+}
