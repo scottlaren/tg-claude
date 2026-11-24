@@ -2,7 +2,7 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
-## Unreleased
+## 0.18.5
 
 - **A computer's key never travels in the open.** The agent no longer connects or pairs over a plain `ws://` address, except to a server on the same computer: its key would be readable on the way. Computers connected with the line from /pair already use `wss://` and notice nothing.
 
