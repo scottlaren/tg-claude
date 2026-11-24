@@ -357,8 +357,11 @@ test('a head knows the way to each of its agents from its prompt, so it can name
   await until(() => h.runs.length === 1)
   const group = String(GROUP).slice(4)
   assert.ok(String(h.runs[0].o.append).includes(`Your agents' topics:\n- Ads: https://t.me/c/${group}/9\n- Props: https://t.me/c/${group}/11`), String(h.runs[0].o.append).slice(-600))
-  h.runs[0].finish()
+  // And whatever it writes, the bot makes the names links itself
+  h.runs[0].finish({ text: 'Перевёл «Ads» на Fable, а **Props** ждёт. Слово ads тут просто слово.' })
   await turn
+  const answer = JSON.stringify(h.calls.findLast(c => /Перевёл/.test(JSON.stringify(c.payload)))!.payload)
+  assert.ok(answer.includes(`https://t.me/c/${group}/9`) && answer.includes(`https://t.me/c/${group}/11`), answer)
 })
 
 test('a picture from another project of the computer comes through it; one not there yet is looked for again and sent after', async () => {

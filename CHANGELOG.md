@@ -2,6 +2,14 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## Unreleased
+
+- **Agents' names in the head's answers are links, for sure.** The head was asked to link its agents and went on writing «floor» in quotes. Now the bot does it itself: a name in quotes, in bold, in code or after the word "agent" becomes a link to that agent's topic. A bare word stays a word.
+
+### Русский
+
+- **Имена агентов в ответах хеда теперь точно ссылки.** Хеда просили давать ссылки на агентов, а он продолжал писать «floor» в кавычках. Теперь это делает сам бот: имя в кавычках, жирным, в коде или после слова «агент» становится ссылкой на топик этого агента. Просто слово остаётся словом.
+
 ## 0.18.3
 
 - **The offer to move a cloud project comes once a day.** “The computer is online. Move the project from the cloud there?” used to return every 12 hours for each topic, and after every server update. Now each computer asks once a day at most, and an update doesn't start it again.

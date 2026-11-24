@@ -101,6 +101,7 @@ import { createFolderRetry, isBusyFolder, rmdirCommand } from './busy-folder.ts'
 import { createSpend } from './spend.ts'
 import { createOffers, createOverview, topicWay, botUserOf } from './overview.ts'
 import { createMoveOffers } from './move-offers.ts'
+import { linkNames } from './agent-links.ts'
 import { createPresence } from './presence.ts'
 import { createContextTrust, heldBackBlock, heldBackPreview, textHash } from './context-trust.ts'
 import { createRuleServer, withRule, RULE_SERVER, SUGGEST_RULE } from '../claude/rule-tools.ts'
@@ -447,6 +448,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   const topicUrl = (key: string) => topicWay(parseKey(key).chatId, parseKey(key).topicId, botUserOf(bot))
   const topicA = (key: string, name: string) => (topicUrl(key) ? `<a href="${topicUrl(key)}">${esc(name)}</a>` : esc(name))
   const topicMd = (key: string, name: string) => (topicUrl(key) ? `[${mdText(name)}](${topicUrl(key)})` : mdText(name))
+  // A head's agents, each with the way to its topic: for the head's prompt, and for its answers, where the bot itself
+  // turns their names into links
+  const teamWays = (key: string) => workersOf(key).flatMap(k => (topicUrl(k) && topics.get(k).workerName ? [{ name: topics.get(k).workerName!, link: topicUrl(k)! }] : []))
   // When the bot moved a topic to another profile at a spent limit. Two accounts that both refuse without saying their
   // limit is spent would pass a task back and forth for ever: past a few moves an hour it waits instead
   const limitMoves = new Map<string, number[]>()
@@ -6767,7 +6771,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         append: (dev && project ? systemAppend(dev, project, dev.id, ctx, Object.keys(cfg.remoteMcp)) : offline ? offlineAppend(Object.keys(cfg.remoteMcp), deviceName(t.deviceId!), t.projectId!) : noProjectAppend(Object.keys(cfg.remoteMcp), gateway.devices().map(d => d.name)))
           + (bound ? browserBlock(dev!.name, bound.deviceId) : canAskBrowser ? BROWSER_ASK : '') + (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '') + (turnMode(key) === 'read'
           ? '\n\n# Read-only topic\nThe user set this topic to review and planning only: read and analyse, propose changes as text, do not attempt writes, commands or app changes.'
-          : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(workersOf(key).flatMap(k => (topicUrl(k) && topics.get(k).workerName ? [{ name: topics.get(k).workerName!, link: topicUrl(k)! }] : []))))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),
+          : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(teamWays(key)))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),
         deviceServer: deviceServer || undefined,
         compactWindow: t.head ? AGENT_WINDOW : TOPIC_WINDOW,
         botServers,
@@ -6984,8 +6988,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       topics.set(key, { suggested: offered ?? undefined })
     }
     const buttons = offered ? `\n\n${question && !note ? `${replyQuestion(question)}\n\n` : ''}${replyButtons(offered.replies, i => suggestionData(offered.id, i))}` : ''
+    // A head's agents, named in its answer, lead to their topics whether or not Claude wrote the links itself
     const finalMd = finalMarkdown({
-      text: [answer, stopped].filter(Boolean).join('\n\n'),
+      text: [t.head ? answer : linkNames(answer, teamWays(key)), stopped].filter(Boolean).join('\n\n'),
       steps,
       durationMs: res.durationMs ?? Date.now() - started,
       note,
