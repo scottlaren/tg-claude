@@ -1,6 +1,6 @@
 {
   "name": "tg-claude",
-  "version": "0.18.2",
+  "version": "0.18.3",
   "private": true,
   "type": "module",
   "description": "Personal Claude client with a Telegram interface: VPS server + Windows/macOS executors",
