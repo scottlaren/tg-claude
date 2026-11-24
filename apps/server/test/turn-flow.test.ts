@@ -347,6 +347,20 @@ test('an agent named in its head\'s topic is the way to its own: its name in a r
   assert.ok(h.said().some(x => x.includes(`Report from agent <b><a href="${link}">Ads</a></b>`)), h.said().join(' | '))
 })
 
+test('a head knows the way to each of its agents from its prompt, so it can name them as links before any report comes', async () => {
+  const h = start()
+  h.topics.set(`${GROUP}:9`, { head: KEY, workerName: 'Ads' })
+  h.topics.set(`${GROUP}:11`, { head: KEY, workerName: 'Props' })
+  h.topics.set(KEY, { workers: [`${GROUP}:9`, `${GROUP}:11`] })
+  await h.text('how is it going')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  const group = String(GROUP).slice(4)
+  assert.ok(String(h.runs[0].o.append).includes(`Your agents' topics:\n- Ads: https://t.me/c/${group}/9\n- Props: https://t.me/c/${group}/11`), String(h.runs[0].o.append).slice(-600))
+  h.runs[0].finish()
+  await turn
+})
+
 test('a picture from another project of the computer comes through it; one not there yet is looked for again and sent after', async () => {
   const { createHash } = await import('node:crypto')
   const h = start({ cfg: { mediaRetryMs: 300 } })

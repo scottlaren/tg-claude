@@ -38,7 +38,7 @@ import { createAppServer, appToolOf } from '../claude/app-tools.ts'
 import { decide } from '../claude/policy.ts'
 import { resolvedPublicUrl, fetchWebMedia, carriesData } from '../net.ts'
 import { createDeviceServer, isDeviceTool, deviceToolOf } from '../claude/device-tools.ts'
-import { offlineAppend, systemAppend, envChangedNote, ECONOMY, browserBlock, noProjectAppend, TEAM, scheduleBlock, BROWSER_ASK, agentBlock, HEAD_TASK, HEAD_MESSAGE } from '../claude/prompt.ts'
+import { offlineAppend, systemAppend, envChangedNote, ECONOMY, browserBlock, noProjectAppend, TEAM, teamLinks, scheduleBlock, BROWSER_ASK, agentBlock, HEAD_TASK, HEAD_MESSAGE } from '../claude/prompt.ts'
 import { createSurveyServer, ASK_SURVEY, SURVEY_SERVER, type SurveyInput, createTopicServer, createTopicNameServer, createComputerServer, SUGGEST_PROJECT, TOPIC_SERVER, RENAME_TOPIC, TOPIC_NAME_SERVER, SUGGEST_COMPUTER, COMPUTER_SERVER, COPY_TO_COMPUTER, createDeleteServer, DELETE_SERVER, DELETE_TOPICS, type DeleteTopics, createDeferServer, DEFER_SERVER, DEFER_TASK, createMessageServer, MESSAGE_SERVER, MESSAGE_TOPIC, type TopicMessage } from '../claude/topic-tools.ts'
 import { answerTarget, canTalkOffline, cloneableRemote, computerNameProblem, deferredPrompt, findComputer, groupProjects, modeCapOf, otherComputers, senderCap, stricterMode, topicMessagePrompt, worktreePath } from './computers.ts'
 import { createProjectCopy, MOVE_SKIP } from './project-copy.ts'
@@ -6639,7 +6639,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         append: (dev && project ? systemAppend(dev, project, dev.id, ctx, Object.keys(cfg.remoteMcp)) : offline ? offlineAppend(Object.keys(cfg.remoteMcp), deviceName(t.deviceId!), t.projectId!) : noProjectAppend(Object.keys(cfg.remoteMcp), gateway.devices().map(d => d.name)))
           + (bound ? browserBlock(dev!.name, bound.deviceId) : canAskBrowser ? BROWSER_ASK : '') + (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '') + (turnMode(key) === 'read'
           ? '\n\n# Read-only topic\nThe user set this topic to review and planning only: read and analyse, propose changes as text, do not attempt writes, commands or app changes.'
-          : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM)) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),
+          : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(workersOf(key).flatMap(k => (topicUrl(k) && topics.get(k).workerName ? [{ name: topics.get(k).workerName!, link: topicUrl(k)! }] : []))))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),
         deviceServer: deviceServer || undefined,
         compactWindow: t.head ? AGENT_WINDOW : TOPIC_WINDOW,
         botServers,
