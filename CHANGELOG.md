@@ -2,7 +2,7 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
-## Unreleased
+## 0.18.2
 
 - **The head links its agents right away.** In 0.18.1 the head learned an agent's link only from that agent's next report, so in its own answers the names stayed plain text until then. Now it knows the way to each of its agents at every turn.
 
