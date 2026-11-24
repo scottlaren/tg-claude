@@ -125,11 +125,31 @@ export function mergeMcp(raw: { mcpFromClaude?: boolean, mcpServers?: Record<str
   return merged
 }
 
+// The computer's key goes to the server in every hello, and with every update it downloads. Over anything but TLS it
+// can be read on the way. So a plain ws:// address is taken for this same computer only (development), for the cloud
+// container, whose link to the server never leaves the VPS, and from one who wrote "plainServer": true into the config
+// knowing what it means
+const LOOPBACK = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i
+export function plainServerProblem(serverUrl: string, { cloud = false, allowed = false } = {}): string | null {
+  let url: URL
+  try {
+    url = new URL(serverUrl)
+  } catch {
+    return `The server address is not an address: ${serverUrl}`
+  }
+  if (url.protocol === 'wss:') return null
+  if (url.protocol !== 'ws:') return `The server address must start with wss://: ${serverUrl}`
+  if (cloud || allowed || LOOPBACK.test(url.hostname)) return null
+  return `${serverUrl} is not encrypted: this computer's key would cross the network in the open. Use the wss:// address (the bot's /pair gives it). For a server on a network of your own, put "plainServer": true into agent.config.json`
+}
+
 export function loadConfig(file = configFile(), home = homedir()): AgentConfig {
   if (!existsSync(file)) throw new Error(`No ${resolve(file)}: create it with npm run agent -- init`)
   const raw = JSON.parse(readFileSync(file, 'utf8'))
   if (!raw.serverUrl) throw new Error(`serverUrl is not set in ${file}`)
   if (!raw.deviceId || !raw.deviceKey) throw new Error('This computer is not paired yet: send /pair to the bot and run the command it sends back')
+  const plain = plainServerProblem(raw.serverUrl, { cloud: raw.deviceId === CLOUD_DEVICE_ID, allowed: raw.plainServer === true })
+  if (plain) throw new Error(plain)
   // Roots are stored as real paths: every later check compares against the resolved form
   const dir = (id: string, path: string) => {
     if (!existsSync(path) || !statSync(path).isDirectory()) throw new Error(`Project ${id}: no folder ${path}`)

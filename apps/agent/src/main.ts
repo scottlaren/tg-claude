@@ -13,7 +13,7 @@ import { existsSync, readFileSync, mkdirSync } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
 import { CLOUD_DEVICE_ID } from '@tgcv/protocol'
 import { parseArgs } from 'node:util'
-import { loadConfig, configFile, deviceOs, machineName, mcpFile, writeConfigFile } from './config.ts'
+import { loadConfig, configFile, deviceOs, machineName, mcpFile, writeConfigFile, plainServerProblem } from './config.ts'
 import { createMcpManager } from './mcp-manager.ts'
 import { createZones } from './zones.ts'
 import { createExecutor } from './executor.ts'
@@ -112,6 +112,9 @@ async function pair(code: string) {
   const raw = existsSync(configFile()) ? JSON.parse(readFileSync(configFile(), 'utf8')) : fresh()
   if (opt.server) raw.serverUrl = opt.server
   if (opt.name) raw.deviceName = opt.name
+  // The key comes back over this link: not in the open
+  const plain = plainServerProblem(raw.serverUrl, { allowed: raw.plainServer === true })
+  if (plain) throw new Error(plain)
   const { deviceId, key } = await pairDevice(raw.serverUrl, code, machineName(raw.deviceName))
   writeConfig({ ...raw, deviceId, deviceKey: key })
   log(`paired with ${raw.serverUrl} as ${deviceId}`)

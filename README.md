@@ -46,6 +46,8 @@ npm run agent -- pair CODE --server wss://server/device
 npm run agent -- install # into the background and autostart at login (Windows, macOS, Linux with systemd)
 ```
 
+The agent connects only over an encrypted address (`wss://`): its key goes to the server with every connection. A plain `ws://` address is taken for the same computer only; for a server on a network of your own, put `"plainServer": true` into `agent.config.json`.
+
 The background agent: `npm run agent -- status`, `restart` (after `git pull` or editing `agent.config.json`), `uninstall` (remove from autostart and stop). The log is `data/logs/agent.log`. On Windows it's an entry in the user's startup items plus a watchdog that brings the agent back up after a crash; on macOS, a LaunchAgent. It runs in the user's session, so it opens AE, Blender and Studio on the user's screen. Two agents with the same config won't start: `npm run agent` in a terminal will say the background one is already running. Without autostart — just `npm run agent`.
 
 `/devices` — which computers are online, unpair one, connect a new one.

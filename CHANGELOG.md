@@ -2,6 +2,14 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## Unreleased
+
+- **A computer's key never travels in the open.** The agent no longer connects or pairs over a plain `ws://` address, except to a server on the same computer: its key would be readable on the way. Computers connected with the line from /pair already use `wss://` and notice nothing.
+
+### Русский
+
+- **Ключ компьютера не ходит по сети в открытую.** Агент больше не подключается и не привязывается по незашифрованному адресу `ws://`, кроме сервера на том же компьютере: ключ можно было бы прочитать по пути. Компьютеры, подключённые строкой из /pair, уже работают по `wss://` и ничего не заметят.
+
 ## 0.18.4
 
 - **Agents' names in the head's answers are links, for sure.** The head was asked to link its agents and went on writing «floor» in quotes. Now the bot does it itself: a name in quotes, in bold, in code or after the word "agent" becomes a link to that agent's topic. A bare word stays a word.
