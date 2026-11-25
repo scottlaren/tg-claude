@@ -35,6 +35,9 @@ function computer(id: string, name: string, projects: string[]) {
 }
 
 type Call = { method: string, payload: Record<string, unknown> }
+// The server's disk as the bot reads it: roomy unless a test says otherwise
+const GB = 1024 ** 3
+let serverDisk: { free: number, total: number } | null = { free: 150 * GB, total: 222 * GB }
 
 function harness(devices: ReturnType<typeof computer>[] = [], dir = mkdtempSync(join(tmpdir(), 'tgcv-flow-')), maxParallel = 0) {
   const topics = createTopicStore(join(dir, 'topics.json'))
@@ -69,7 +72,7 @@ function harness(devices: ReturnType<typeof computer>[] = [], dir = mkdtempSync(
   const updates: Record<string, unknown> = {}
   const registry = createDeviceRegistry(join(dir, 'devices.json'))
   const made = createBot({
-    cfg: { token: '1:test', ownerIds: [OWNER], dataDir: dir, workDir: dir, profileDir: dir, topicTtlDays: 0, maxParallel, deferredSettleMs: 60, chromeConnectMs: 1, model: 'opus', chatModel: 'sonnet', effort: 'medium', apiTimeoutSec: 180, remoteMcp: {} } as never,
+    cfg: { diskOf: () => serverDisk, token: '1:test', ownerIds: [OWNER], dataDir: dir, workDir: dir, profileDir: dir, topicTtlDays: 0, maxParallel, deferredSettleMs: 60, chromeConnectMs: 1, model: 'opus', chatModel: 'sonnet', effort: 'medium', apiTimeoutSec: 180, remoteMcp: {} } as never,
     topics,
     workspaces,
     gateway: gateway as never,
@@ -1856,4 +1859,95 @@ test('"Not now" for stale worktrees holds for a week', async () => {
   assert.ok(quiet() > Date.now() + 6 * 86400_000)
   assert.ok(h.said().some(c => /ask again in a week/.test(textOf(c))))
   assert.ok(existsSync(folder('old')))
+})
+
+test('a branch goes to another computer through git: cloned there light, then kept in step; a copy with work of its own is left alone', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const pc = computer('pc', 'PC', ['game'])
+  const mac = computer('mac', 'Mac', [])
+  const h = start([pc, mac])
+  // A remote both can reach: a bare repository beside them
+  const remote = join(mkdtempSync(join(tmpdir(), 'tgcv-remote-')), 'game.git')
+  execFileSync('git', ['init', '-q', '--bare', remote])
+  const here = join(pc.zone, 'game')
+  const there = join(mac.zone, 'game')
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  mkdirSync(join(here, 'docs', 'qa'), { recursive: true })
+  mkdirSync(join(here, 'src'))
+  writeFileSync(join(here, 'docs', 'qa', 'shot.png'), 'heavy')
+  writeFileSync(join(here, 'src', 'a.lua'), 'a')
+  writeFileSync(join(here, '.worktree-skip'), 'docs/qa\n')
+  git(here, 'init', '-q', '-b', 'main')
+  git(here, 'add', '-A')
+  git(here, 'commit', '-q', '-m', 'init')
+  git(here, 'remote', 'add', 'origin', remote)
+  git(here, 'checkout', '-q', '-b', 'soak')
+  pc.projects = pc.workspace.list(true) as Project[]
+  const KEY = `${OWNER}:5`
+  h.topics.bind(KEY, 'pc', pc.projects.find(p => p.name === 'game')!.id)
+
+  const first = await h.syncBranch(KEY, { computer: 'Mac' }, remote)
+  assert.match(first, /^soak \([0-9a-f]{7,}\) is on Mac, in the project "game", cloned just now: start_agent with device "Mac" and project "game"/)
+  assert.match(first, /Left out there, as \.worktree-skip says: docs\/qa\./)
+  assert.equal(readFileSync(join(there, 'src', 'a.lua'), 'utf8'), 'a')
+  assert.ok(!existsSync(join(there, 'docs', 'qa')), 'the heavy folder stayed behind')
+  assert.equal(git(there, 'branch', '--show-current'), 'soak')
+  assert.ok(mac.workspace.list(true).some(p => p.name === 'game'), 'a project there now')
+
+  // Work goes on here: the next time only what is new travels, and what isn't committed doesn't
+  writeFileSync(join(here, 'src', 'b.lua'), 'b')
+  git(here, 'add', 'src/b.lua')
+  git(here, 'commit', '-q', '-m', 'more')
+  writeFileSync(join(here, 'notes.txt'), 'not committed')
+  const second = await h.syncBranch(KEY, { computer: 'mac' }, remote)
+  assert.match(second, /is on Mac, in the project "game": start_agent/)
+  assert.match(second, /Not committed here, so not there: 1 file\./)
+  assert.equal(readFileSync(join(there, 'src', 'b.lua'), 'utf8'), 'b')
+  assert.equal(git(there, 'rev-parse', 'HEAD'), git(here, 'rev-parse', 'HEAD'))
+  assert.ok(!existsSync(join(there, 'notes.txt')))
+
+  // Another branch, one the copy has never seen
+  git(here, 'checkout', '-q', '-b', 'sweep')
+  assert.match(await h.syncBranch(KEY, { computer: 'Mac', branch: 'sweep' }, remote), /^sweep /)
+  assert.equal(git(there, 'branch', '--show-current'), 'sweep')
+
+  // Something not committed there is somebody's work: nothing is moved under it
+  writeFileSync(join(there, 'scratch.txt'), 'an agent was here')
+  assert.match(await h.syncBranch(KEY, { computer: 'Mac', branch: 'soak' }, remote), /The copy on Mac has uncommitted changes: nothing was changed there/)
+  assert.equal(git(there, 'branch', '--show-current'), 'sweep')
+  assert.match(await h.syncBranch(KEY, { computer: 'Nowhere' }, remote), /No other computer named "Nowhere" is online/)
+  assert.match(await h.syncBranch(KEY, { computer: 'PC' }, remote), /No other computer named "PC" is online/, 'not to itself')
+})
+
+test('the server\'s disk nearly full: the owner hears once a day, and the cloud takes no new project', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const pc = computer('pc', 'PC', ['game'])
+  const cloud = computer('cloud', 'Cloud', [])
+  const h = start([pc, cloud])
+  const low = () => h.said().filter(c => /disk is nearly full/.test(textOf(c)))
+  h.checkDisk()
+  assert.equal(low().length, 0, 'room enough: not a word')
+  const remote = join(mkdtempSync(join(tmpdir(), 'tgcv-remote-')), 'game.git')
+  execFileSync('git', ['init', '-q', '--bare', remote])
+  const here = join(pc.zone, 'game')
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: here, stdio: 'ignore' })
+  git('init', '-q', '-b', 'main')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  git('remote', 'add', 'origin', remote)
+  const KEY = `${OWNER}:5`
+  h.topics.bind(KEY, 'pc', pc.projects.find(p => p.name === 'game')!.id)
+  try {
+    serverDisk = { free: 8 * GB, total: 222 * GB }
+    h.checkDisk()
+    h.checkDisk()
+    assert.equal(low().length, 1, 'once, however often it is looked at')
+    assert.match(textOf(low()[0]), /<b>8\.0 GB<\/b> free of 222\.0 GB/)
+    assert.equal(low()[0].payload.chat_id, OWNER)
+    assert.match(await h.syncBranch(KEY, { computer: 'Cloud' }, remote), /The server's disk is nearly full \(8 GB free\): no new project is cloned to Cloud/)
+    assert.ok(!existsSync(join(cloud.zone, 'game')), 'nothing was made there')
+    serverDisk = { free: 150 * GB, total: 222 * GB }
+    assert.match(await h.syncBranch(KEY, { computer: 'Cloud' }, remote), /^main \([0-9a-f]{7,}\) is on Cloud, in the project "game", cloned just now/)
+  } finally {
+    serverDisk = { free: 150 * GB, total: 222 * GB }
+  }
 })

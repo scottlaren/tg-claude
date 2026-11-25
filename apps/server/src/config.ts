@@ -48,6 +48,8 @@ export type ServerConfig = {
   worktreeStaleMs?: number
   // How long a browser errand waits for a computer that has just dropped its link
   errandBackMs?: number
+  // Tests: the server's disk as it would be read
+  diskOf?: () => { free: number, total: number } | null
   limitTickMs?: number
   // The night shift: how often it is looked at, after how long a quiet head is woken, and for tests a harmless stand-in
   // for putting a computer to sleep

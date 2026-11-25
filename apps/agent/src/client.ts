@@ -31,7 +31,7 @@ export function startClient(
   projects: () => Project[] = () => cfg.projects,
   // A server on a newer release that turned this agent away: the agent may update itself to it
   onReject: (reason: string, serverRelease?: string) => void = () => {},
-  { handshakeMs = HANDSHAKE_MS, silenceMs = SILENCE_MS, rejectRetryMs = REJECT_RETRY_MS, locked = () => false as boolean, lockWatchMs = LOCK_WATCH_MS, keepAwake = () => undefined as boolean | undefined, screen = false } = {},
+  { handshakeMs = HANDSHAKE_MS, silenceMs = SILENCE_MS, rejectRetryMs = REJECT_RETRY_MS, locked = () => false as boolean, lockWatchMs = LOCK_WATCH_MS, keepAwake = () => undefined as boolean | undefined, screen = false, capacity = undefined as { cores: number, memGb: number } | undefined } = {},
 ) {
   let ws: WebSocket | null = null
   let welcomed = false
@@ -90,6 +90,7 @@ export function startClient(
         version: AGENT_VERSION,
         release: AGENT_RELEASE,
         shared: cfg.shared,
+        ...capacity,
         deviceId: cfg.deviceId,
         deviceName: cfg.deviceName,
         key: cfg.deviceKey,
@@ -180,6 +181,10 @@ export function startClient(
     // How long the server has had this computer on the current link; 0 with no link. A server that just came back asks
     // about what it left open in its first moments here
     linkedFor: () => (ws && welcomed ? Date.now() - welcomedAt : 0),
+    // How busy the computer is now: dropped when there is no link, the next one says it again
+    load(m: { busy: number, idleSec?: number }) {
+      if (welcomed) send({ type: 'load', ...m })
+    },
     // One connection of the local proxy, made on the server: resolves once it is open there, then the bytes flow
     tunnel(socket: Duplex, host: string, port: number): Promise<void> {
       if (!welcomed) return Promise.reject(new Error('no connection to the server'))

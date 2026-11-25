@@ -45,7 +45,7 @@ const JOURNAL_TTL_MS = 6 * 3600_000
 const QUIET: ReadonlySet<OpTool> = new Set(['project_context', 'list_projects', 'github_status', 'zones', 'folders'])
 const deviceOp = (tool: OpTool) => (DEVICE_OPS as readonly string[]).includes(tool)
 
-export function createExecutor({ projects = [], workspace, zones, shell, log, mcp, mcpManager, apps, shared = [], github, chromePolicy, selfUpdate, openLogin, openChrome, screen, lock, audit, awake, settings, journalBytes = JOURNAL_BYTES, journalTtlMs = JOURNAL_TTL_MS, skillsDir = skillsDirOf() }: {
+export function createExecutor({ projects = [], workspace, zones, shell, log, mcp, mcpManager, apps, shared = [], github, chromePolicy, selfUpdate, openLogin, openChrome, screen, lock, audit, awake, settings, meter, journalBytes = JOURNAL_BYTES, journalTtlMs = JOURNAL_TTL_MS, skillsDir = skillsDirOf() }: {
   projects?: Project[], workspace?: Workspace, zones?: Zones, shell: string, log: (...a: unknown[]) => void, mcp?: McpHub, mcpManager?: McpManager, apps?: Apps, shared?: string[],
   journalBytes?: number, journalTtlMs?: number, skillsDir?: string,
   github?: GitHub, chromePolicy?: ChromePolicy, selfUpdate?: (tag: string, sha256?: string) => Promise<SelfUpdateResult>,
@@ -58,6 +58,8 @@ export function createExecutor({ projects = [], workspace, zones, shell, log, mc
   audit?: (req: OpRequest, refused: boolean) => void,
   awake?: KeepAwake,
   settings?: Settings,
+  // What a command cost in processor time (load.ts)
+  meter?: () => () => number,
 }) {
   const githubOrFail = () => {
     if (!github) throw new ToolError('unavailable', 'GitHub is not set up on this device')
@@ -229,7 +231,16 @@ export function createExecutor({ projects = [], workspace, zones, shell, log, mc
       case 'view_image': throw new ToolError('bad_request', 'view_image is run by the server, not the device')
       case 'write_file': return writeTextFile(root, parseToolInput(tool, params))
       case 'edit_file': return editTextFile(root, parseToolInput(tool, params))
-      case 'run_command': return runCommand(root, shell, parseToolInput(tool, params), signal)
+      case 'run_command': {
+        const spent = meter?.()
+        try {
+          const r = await runCommand(root, shell, parseToolInput(tool, params), signal)
+          // One left running in the background has spent nothing yet
+          return spent && !r.background ? { ...r, coreSec: spent() } : r
+        } finally {
+          spent?.()
+        }
+      }
       case 'file_put': return putFileChunk(root, filePutParams.parse(params))
       // Runs on the server, which holds the file and sends it here as file_put
       case 'save_attachment': throw new ToolError('bad_request', 'save_attachment is run by the server, not the device')

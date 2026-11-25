@@ -33,6 +33,7 @@ import { createLock } from './lock.ts'
 import { createAudit } from './audit.ts'
 import { createKeepAwake, awakeDefault, holdsAfterWake, saveKeepAwake, watchWakes } from './keep-awake.ts'
 import { watchNaps } from './nap.ts'
+import { createLoad, watchLoad } from './load.ts'
 import { createSettings } from './settings.ts'
 import { createRestartGate } from './restart-gate.ts'
 import { newer, releaseOf, type SelfUpdateResult } from '@tgcv/protocol'
@@ -49,15 +50,16 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const LINK_SETTLE_MS = 5000
 
 // The screen's helper of this system, or nothing when there is none
+// idle: for how long nobody has touched the computer, in milliseconds, asked of the same helper
 function desktop(stateDir: string) {
-  if (process.platform === 'win32') return createScreen(winBackend())
-  if (process.platform !== 'darwin') return undefined
-  const why = macScreenMissing()
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return undefined
+  const why = process.platform === 'darwin' ? macScreenMissing() : null
   if (why) {
     log(`the screen tool is off: ${why}`)
     return undefined
   }
-  return createScreen(macBackend({ cacheDir: join(stateDir, 'screen-helper') }))
+  const backend = process.platform === 'win32' ? winBackend() : macBackend({ cacheDir: join(stateDir, 'screen-helper') })
+  return { screen: createScreen(backend), idle: () => backend.idle() }
 }
 
 // Config and state are relative to the repo: the same files whether started by npm or at login
@@ -265,7 +267,9 @@ async function run() {
   const stateDir = dirname(resolve(process.env.AGENT_STATE ?? 'agent.state.json'))
   const lock = createLock(join(stateDir, 'agent.locked'))
   // The desktop, for Claude's screen tool
-  const screen = cfg.deviceId === CLOUD_DEVICE_ID ? undefined : desktop(stateDir)
+  const desk = cfg.deviceId === CLOUD_DEVICE_ID ? undefined : desktop(stateDir)
+  const screen = desk?.screen
+  const load = createLoad()
   const awake = createKeepAwake({ on: cfg.keepAwake ?? awakeDefault(process.platform), log, save: on => saveKeepAwake(configFile(), on) })
   awakeClose = awake.close
   // Woken from afar, the computer would go back to sleep before the user could give it a task
@@ -278,7 +282,7 @@ async function run() {
   if (lock.locked()) log(`🔒 this computer is locked: every operation is refused until this file is deleted: ${lock.file}`)
   // The cloud is rebuilt with the server: it never updates itself
   const executor = createExecutor({
-    workspace, shell: cfg.shell, log, mcp, apps, shared: cfg.shared, github, chromePolicy, lock,
+    workspace, shell: cfg.shell, log, mcp, apps, shared: cfg.shared, github, chromePolicy, lock, meter: load.meter,
     awake: cfg.deviceId === CLOUD_DEVICE_ID ? undefined : awake,
     settings: cfg.deviceId === CLOUD_DEVICE_ID ? undefined : createSettings({ mcpFile: mcpFile() }),
     audit: createAudit(join(stateDir, 'agent.audit.log'), log),
@@ -300,10 +304,15 @@ async function run() {
     locked: lock.locked,
     keepAwake: () => (cfg.deviceId !== CLOUD_DEVICE_ID && awake.state().supported ? awake.state().on : undefined),
     screen: !!screen,
+    capacity: load.capacity,
   })
+  // Asleep under its lid, a Mac says nothing: there is no link to say it over
+  let resting = false
+  watchLoad(load, m => client!.load(m), { idleSec: async () => (desk && !resting ? (await desk.idle()) / 1000 : undefined) })
   // A Mac asleep under its lid: off the link, and nothing of ours keeps it up
   if (cfg.deviceId !== CLOUD_DEVICE_ID && cfg.restAsleep !== false) {
-    watchNaps(resting => {
+    watchNaps(now => {
+      resting = now
       log(resting ? 'asleep with the screen off: off the link until it wakes' : 'awake again: back on the link')
       awake.rest(resting)
       client!.rest(resting)

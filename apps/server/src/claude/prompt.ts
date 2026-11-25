@@ -154,6 +154,40 @@ export function lightWorktreeLines(project: Pick<Project, 'worktreeSkip' | 'left
   ]
 }
 
+// Where heavy work runs: what each computer has and how busy it is, and what this project's heavy commands cost when
+// they were measured. Only when there is a choice to make: another computer online, and either such a command or this
+// computer busy. The figures are rough (heavy.ts); they tell minutes from hours
+type Capacity = { name: string, cores?: number, memGb?: number, load?: { busy: number, idleSec?: number, at: number } }
+const span = (sec: number) => (sec < 90 ? `${Math.max(1, Math.round(sec))} s` : sec < 7200 ? `${Math.round(sec / 60)} min` : `${Math.round(sec / 360) / 10} h`)
+const FRESH_MS = 10 * 60_000
+export function computerLine(d: Capacity, now = Date.now()) {
+  const load = d.load && now - d.load.at < FRESH_MS ? d.load : undefined
+  const idle = load?.idleSec
+  return [
+    `${d.name}: ${d.cores ? `${d.cores} ${d.cores === 1 ? 'core' : 'cores'}` : 'size not known'}`,
+    d.memGb ? `${d.memGb} GB` : '',
+    load ? `${load.busy}% busy` : '',
+    idle === undefined ? '' : idle < 120 ? 'the user is at it' : idle >= 600 ? `nobody at it for ${span(idle)}` : '',
+  ].filter(Boolean).join(', ')
+}
+export function heavyBlock(here: Capacity, others: Capacity[], heavy: { cmd: string, wallSec: number, coreSec: number, device: string, cores: number }[], canSend: boolean, now = Date.now()) {
+  const busy = here.load && now - here.load.at < FRESH_MS ? here.load.busy : 0
+  if (!others.length || (!heavy.length && busy < 70)) return ''
+  const sized = others.filter(o => o.cores)
+  const lines = heavy.map(h => {
+    const used = Math.max(1, Math.round(h.coreSec / Math.max(1, h.wallSec)))
+    const elsewhere = sized.map(o => `about ${span(h.coreSec / Math.min(used, o.cores!))} on ${o.name}`)
+    return `- \`${h.cmd}\`: ${span(h.wallSec)} on ${h.device}, using about ${used} of its ${h.cores} cores${elsewhere.length ? `; ${elsewhere.join(', ')}` : ''}`
+  })
+  return `
+
+# Where heavy work runs
+Computers now: ${[here, ...others].map(d => computerLine(d, now)).join('. ')}.${lines.length ? `
+Measured in this project (rough: a share of a busy computer, and cores differ):
+${lines.join('\n')}` : ''}
+Long processor-heavy work nobody waits for (soak runs, sweeps, overnight checks) goes where there is room when this computer is busy or the user is working at it${canSend ? ': sync_branch brings this project and its branch to the other computer through git, then start_agent runs it there' : ''}. What an agent waits for after each edit stays here, and so does anything that needs this computer's apps or files outside git. A computer with fewer cores takes longer, as the figures say: tell the user when you move work and why.`
+}
+
 // Environment context (§6): rebuilt every turn, so a device switch shows up immediately
 export function systemAppend(device: Device | undefined, project: Project | undefined, deviceId: string, ctx: ProjectContext | null = null, remote: string[] = []) {
   const where = device && project

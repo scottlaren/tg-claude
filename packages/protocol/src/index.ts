@@ -129,6 +129,9 @@ export type ToolResult = {
   run_command: {
     exitCode: number | null, signal: string | null, timedOut: boolean, cancelled: boolean,
     stdout: string, stderr: string, truncated: boolean, durationMs: number,
+    // Processor-seconds that were its share of what the computer spent while it ran: rough, for choosing where a
+    // heavy command runs the next time
+    coreSec?: number,
     // Started with background: it runs on, its output going to log
     background?: { pid: number, log: string }
   }
@@ -403,7 +406,14 @@ const Hello = z.object({
   release: z.string().max(32).optional(),
   // Folders every project may read, never change (Downloads…), set on the computer
   shared: z.array(z.string()).default([]),
+  // What it has to work with: processors (a container's own share) and memory. Absent: too old to say
+  cores: z.number().positive().max(4096).optional(),
+  memGb: z.number().positive().max(65536).optional(),
 })
+
+// How busy the computer is, 0 to 100 of all its processors, and for how long nobody has touched it (absent: not
+// known, or nobody ever does, as in the cloud). Sent when either changes enough to matter
+const Load = z.object({ type: z.literal('load'), busy: z.number().min(0).max(100), idleSec: z.number().min(0).optional() })
 
 // Sent whenever an app's MCP server connects, drops or changes its tool list (§10.1)
 const McpUpdate = z.object({ type: z.literal('mcp.update'), servers: z.array(McpServerInfo) })
@@ -437,7 +447,7 @@ const TunnelAck = z.object({ type: z.literal('tunnel.ack'), sid: z.number().int(
 const TunnelClose = z.object({ type: z.literal('tunnel.close'), sid: z.number().int(), error: z.string().max(300).optional() })
 export type TunnelOpen = z.infer<typeof TunnelOpen>
 
-export const DeviceMessage = z.discriminatedUnion('type', [Hello, OpEvent, McpUpdate, Pair, TunnelOpen, TunnelData, TunnelAck, TunnelClose])
+export const DeviceMessage = z.discriminatedUnion('type', [Hello, OpEvent, McpUpdate, Load, Pair, TunnelOpen, TunnelData, TunnelAck, TunnelClose])
 export type DeviceMessage = z.infer<typeof DeviceMessage>
 export type Hello = z.infer<typeof Hello>
 export type OpEvent = z.infer<typeof OpEvent>

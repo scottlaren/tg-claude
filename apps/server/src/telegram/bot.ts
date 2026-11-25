@@ -4,7 +4,7 @@ import { randomInt, randomBytes, randomUUID, createHash } from 'node:crypto'
 import { readFileSync, readdirSync, rmSync, writeFileSync, statSync, mkdtempSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir, freemem, totalmem, platform, release } from 'node:os'
-import { disk, dirSize, claudeVersions, bytes, duration, SERVER_VERSION } from '../diag.ts'
+import { disk, diskLow, dirSize, claudeVersions, bytes, duration, SERVER_VERSION } from '../diag.ts'
 import { listBackups } from '../backup.ts'
 import { pullFile, relayFile } from '../transfer.ts'
 import { redact, revealText } from './redact.ts'
@@ -38,8 +38,8 @@ import { createAppServer, appToolOf } from '../claude/app-tools.ts'
 import { decide } from '../claude/policy.ts'
 import { resolvedPublicUrl, fetchWebMedia, carriesData } from '../net.ts'
 import { createDeviceServer, isDeviceTool, deviceToolOf } from '../claude/device-tools.ts'
-import { offlineAppend, systemAppend, envChangedNote, ECONOMY, browserBlock, noProjectAppend, TEAM, teamLinks, scheduleBlock, BROWSER_ASK, agentBlock, HEAD_TASK, HEAD_MESSAGE } from '../claude/prompt.ts'
-import { createSurveyServer, ASK_SURVEY, SURVEY_SERVER, type SurveyInput, createTopicServer, createTopicNameServer, createComputerServer, SUGGEST_PROJECT, TOPIC_SERVER, RENAME_TOPIC, TOPIC_NAME_SERVER, SUGGEST_COMPUTER, COMPUTER_SERVER, COPY_TO_COMPUTER, createDeleteServer, DELETE_SERVER, DELETE_TOPICS, type DeleteTopics, createDeferServer, DEFER_SERVER, DEFER_TASK, createMessageServer, MESSAGE_SERVER, MESSAGE_TOPIC, type TopicMessage } from '../claude/topic-tools.ts'
+import { offlineAppend, systemAppend, envChangedNote, ECONOMY, browserBlock, heavyBlock, noProjectAppend, TEAM, teamLinks, scheduleBlock, BROWSER_ASK, agentBlock, HEAD_TASK, HEAD_MESSAGE } from '../claude/prompt.ts'
+import { createSurveyServer, ASK_SURVEY, SURVEY_SERVER, type SurveyInput, createTopicServer, createTopicNameServer, createComputerServer, SUGGEST_PROJECT, TOPIC_SERVER, RENAME_TOPIC, TOPIC_NAME_SERVER, SUGGEST_COMPUTER, COMPUTER_SERVER, COPY_TO_COMPUTER, SYNC_BRANCH, type SyncBranch, createDeleteServer, DELETE_SERVER, DELETE_TOPICS, type DeleteTopics, createDeferServer, DEFER_SERVER, DEFER_TASK, createMessageServer, MESSAGE_SERVER, MESSAGE_TOPIC, type TopicMessage } from '../claude/topic-tools.ts'
 import { answerTarget, canTalkOffline, cloneableRemote, computerNameProblem, deferredPrompt, findComputer, groupProjects, modeCapOf, otherComputers, senderCap, stricterMode, topicMessagePrompt, worktreePath } from './computers.ts'
 import { createProjectCopy, MOVE_SKIP } from './project-copy.ts'
 import { createScheduleServer, SCHEDULE_SERVER, SCHEDULE_TASK } from '../claude/schedule-tools.ts'
@@ -78,6 +78,7 @@ import { splitTasks } from '../claude/split-tasks.ts'
 import { createLockMenu, createLocks } from './lock-menu.ts'
 import { moveCard, type PortableSettings } from './settings-move.ts'
 import { cleanable, firstNames, folderName, lastMoved, parseWorktrees, type Worktree } from './worktree-clean.ts'
+import { createHeavyStore } from './heavy.ts'
 import { createChecklistServer, livePlan, finalPlan, CHECKLIST_SERVER, SET_CHECKLIST, type ChecklistStep } from '../claude/checklist-tools.ts'
 import { toolResultImage, imageMime } from '../claude/tool-results.ts'
 import { stageUploads } from '../claude/browser-upload.ts'
@@ -2451,6 +2452,21 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const swept = profiles.sweepSessions(keep, cfg.topicTtlDays * 24 * 3600_000, now)
     if (swept) log.info('old conversations swept', { swept })
   }
+  // The server's disk running out: said once a day while it lasts. Nothing else warns before the bot can no longer
+  // write its own state; the cloud's projects are on the same disk
+  const serverDisk = () => (cfg.diskOf ? cfg.diskOf() : disk(cfg.dataDir))
+  let diskSaidAt = 0
+  function checkDisk() {
+    const d = serverDisk()
+    if (!diskLow(d) || Date.now() - diskSaidAt < 24 * 3600_000) return
+    diskSaidAt = Date.now()
+    log.warn('server disk low', { free: d!.free, total: d!.total })
+    toOwners(tr(
+      `💽 The server's disk is nearly full: <b>${bytes(d!.free)}</b> free of ${bytes(d!.total)}. The cloud takes no new projects until there is room. /cleanup shows what can go; /diag shows what takes it.`,
+      `💽 Диск сервера почти полон: свободно <b>${bytes(d!.free)}</b> из ${bytes(d!.total)}. Облако не принимает новые проекты, пока место не появится. /cleanup покажет, что можно удалить; /diag — что занимает место.`,
+    ))
+  }
+  const diskTimers = [setTimeout(checkDisk, 90_000).unref(), setInterval(checkDisk, 3600_000).unref()]
   const expiryTimers = cfg.topicTtlDays
     ? [setTimeout(() => checkExpiry().catch(e => log.warn('expiry', (e as Error).message)), 60_000),
       setInterval(() => checkExpiry().catch(e => log.warn('expiry', (e as Error).message)), 3600_000)]
@@ -4354,6 +4370,75 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     if (key && out.ok) topics.set(key, { remote: { for: remoteFor(t), url } })
     return url
   }
+  // The same repository, however its address is written
+  const repoOf = (url: string) => url.trim().replace(/^(https?:\/\/|ssh:\/\/)/i, '').replace(/^[^/@]*@/, '').replace(':', '/').replace(/\.git$/i, '').replace(/\/+$/, '').toLowerCase()
+  // A branch of this topic's project on another computer: pushed from here, cloned or fetched there. Code travels through
+  // its remote, the one way that keeps both sides in step; what isn't committed stays here. via: for tests, which have
+  // no remote a real project would
+  async function syncBranch(key: string, p: SyncBranch, via?: string): Promise<string> {
+    const t = topics.get(key)
+    const here = t.deviceId ? gateway.device(t.deviceId) : undefined
+    const source = here?.projects.find(x => x.id === t.projectId)
+    if (!here || !source) return 'This topic has no project on a computer that is online.'
+    const target = findComputer(gateway.devices(), p.computer)
+    if (!target || target.id === here.id) return `No other computer named "${p.computer}" is online.`
+    if (target.locked) return `${target.name} is locked at the computer: nothing can be done there.`
+    const url = via ?? await remoteOf(t)
+    if (!url) return 'This project has no git remote to go through (git remote get-url origin). Push it to a remote first, or send files with copy_files.'
+    const out = async (deviceId: string, projectId: string, args: string[], timeoutSec = 120) => {
+      const r = await git(deviceId, projectId, args, timeoutSec)
+      return { failed: gitFailed(r), text: gitOut(r).trim() }
+    }
+    const branch = p.branch ?? (await out(here.id, source.id, ['rev-parse', '--abbrev-ref', 'HEAD'])).text
+    if (!/^[\w][\w./-]{0,100}$/.test(branch) || branch === 'HEAD') return 'No branch to send: the project is on a detached HEAD. Name a branch.'
+    const pushed = (await out(here.id, source.id, ['push', '-q', 'origin', branch], 600)).failed
+    if (pushed) return `git push origin ${branch} failed on ${here.name}: ${pushed}`
+    const head = (await out(here.id, source.id, ['rev-parse', '--short', branch])).text
+    const dirty = (await out(here.id, source.id, ['status', '--porcelain'])).text.split('\n').filter(Boolean).length
+    // By the repository's own name, whatever worktree this topic is in
+    const root = (source.worktreeOf && here.projects.find(x => x.id === source.worktreeOf)) || source
+    let there = (await gateway.refreshProjects(target.id)).find(x => !x.worktreeOf && x.name === root.name)
+    const skip = sparsePatterns(root.worktreeSkip ?? source.worktreeSkip ?? [])
+    let made = false
+    if (there) {
+      const its = (await out(target.id, there.id, ['remote', 'get-url', 'origin'])).text
+      if (!its || repoOf(its) !== repoOf(url)) return `${target.name} has a project "${root.name}" that is not a clone of this repository: nothing was changed there.`
+      if ((await out(target.id, there.id, ['status', '--porcelain'])).text) return `The copy on ${target.name} has uncommitted changes: nothing was changed there. An agent there commits or discards them first.`
+      const fetched = (await out(target.id, there.id, ['fetch', '-q', 'origin', branch], 900)).failed
+      if (fetched) return `git fetch on ${target.name} failed: ${fetched}`
+      const has = !(await out(target.id, there.id, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`])).failed
+      const moved = has
+        ? (await out(target.id, there.id, ['checkout', '-q', branch], 600)).failed ?? (await out(target.id, there.id, ['merge', '-q', '--ff-only', `origin/${branch}`], 600)).failed
+        : (await out(target.id, there.id, ['checkout', '-q', '-b', branch, '--track', `origin/${branch}`], 600)).failed
+      if (moved) return `The copy on ${target.name} could not be moved to ${branch} as pushed: ${moved}. If it has commits of its own on that branch, an agent there pushes or drops them first.`
+    } else {
+      // The cloud's projects are on the server's own disk, with nothing to stop them filling it
+      if (isCloud(target.id) && diskLow(serverDisk())) return `The server's disk is nearly full (${Math.round((serverDisk()?.free ?? 0) / 1024 ** 3)} GB free): no new project is cloned to ${target.name} until the user frees room (/cleanup). Tell the user.`
+      try {
+        there = await created(target.id, root.name)
+      } catch (e) {
+        return `No project folder could be made on ${target.name}: ${(e as Error).message}`
+      }
+      made = true
+      const failed = (await out(target.id, there.id, ['clone', '-q', '--filter=blob:none', '--no-checkout', url, '.'], 900)).failed
+        ?? (skip.length > 1 ? (await out(target.id, there.id, ['sparse-checkout', 'set', '--no-cone', ...skip])).failed : null)
+        ?? (await out(target.id, there.id, ['checkout', '-q', branch], 900)).failed
+      if (failed) return `The folder "${root.name}" on ${target.name} was made, but git didn't fill it: ${failed}`
+    }
+    // Submodules are part of the code: tests that need one fail without it in ways that say nothing of why
+    const subs = !(await out(target.id, there.id, ['config', '--file', '.gitmodules', '--get-regexp', 'path'])).failed
+    const subFailed = subs ? (await out(target.id, there.id, ['submodule', 'update', '--init', '-q'], 900)).failed : null
+    await gateway.refreshProjects(target.id).catch(() => {})
+    log.info('branch synced', { key, from: here.id, to: target.id, project: root.name, branch, made })
+    return [
+      `${branch} (${head}) is on ${target.name}, in the project "${root.name}"${made ? ', cloned just now' : ''}: start_agent with device "${target.name}" and project "${root.name}" works there.`,
+      dirty ? `Not committed here, so not there: ${dirty} ${dirty === 1 ? 'file' : 'files'}.` : '',
+      made && skip.length > 1 ? `Left out there, as .worktree-skip says: ${skip.slice(1).map(s => s.slice(2, -1)).join(', ')}.` : '',
+      subFailed ? `Its submodules could not be brought: ${subFailed}` : '',
+      'Tools the project needs are not installed by this: the agent there checks them first (command -v) and installs what is missing into its home folder.',
+    ].filter(Boolean).join(' ')
+  }
+
   // Once per project on a computer, and only while the cloud is there to use it: the day the computer is off is too late to ask it
   async function rememberRemote(key: string) {
     const t = topics.get(key)
@@ -4984,7 +5069,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       const app = appToolOf(tool, apps)
       const remote = isRemoteTool(tool, mcpServer, cfg.remoteMcp)
       // Writes on a computer like any command: the topic's mode decides
-      const copying = tool === COPY_TO_COMPUTER && mcpServer?.source === 'sdk' && mcpServer.name === COMPUTER_SERVER
+      const copying = (tool === COPY_TO_COMPUTER || tool === SYNC_BRANCH) && mcpServer?.source === 'sdk' && mcpServer.name === COMPUTER_SERVER
       const ours = remote || copying || (mcpServer?.source === 'sdk' && (isDeviceTool(tool) ? mcpServer.name === 'device' : !!app && mcpServer.name === app.app.name))
       if (!ours) {
         log.warn('permission', { key, tool, verdict: 'denied: not ours', server: mcpServer })
@@ -5364,6 +5449,10 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       if (l.queue.length) processQueue(key)
     }
   }
+
+  // --- what heavy commands cost, by repository on its computer: a worktree's runs count for its repository -------------
+  const heavy = createHeavyStore(join(cfg.dataDir, 'heavy-commands.json'))
+  const heavyKey = (deviceId: string, project: Project) => `${deviceId}:${project.worktreeOf ?? project.id}`
 
   // --- worktrees that only take room. Of merged branches: a card to remove them, or done by itself once the user
   // says so. Ones nobody has touched for a week: a card to remove their folders, the branches stay ---------------
@@ -6542,6 +6631,10 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       if (tool === 'save_attachment') return saveAttachment(params)
       if (tool === 'send_file') return sendFromDevice(params)
       const out = await request(tool, params, toolStep(`mcp__device__${tool}`, params))
+      // What it cost, for the next time it is about to run (heavy.ts)
+      if (out.ok && tool === 'run_command' && project && heavy.note(heavyKey(dev.id, project), dev, params, out.result as ToolResult['run_command'])) {
+        log.info('heavy command', { key, device: dev.id, sec: Math.round((out.result as ToolResult['run_command']).durationMs / 1000), coreSec: (out.result as ToolResult['run_command']).coreSec })
+      }
       // Claude's tools are set when a turn starts: the next one has them, and goes on with the task
       if (out.ok && tool === 'add_mcp_server' && (out.result as ToolResult['add_mcp_server']).status === 'connected') {
         enqueue(chatId, topicId, `[The MCP server «${String(params.name)}» is connected: its tools are here now. Go on with the task.]`, { reply: false })
@@ -6859,7 +6952,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       ...(freshWindow && { [FRESH_SERVER]: createFreshServer({ pct: Math.round(freshWindow.pct), resetsIn: resetTag(freshWindow.resetsAt), label: freshWindow.label }, why => offerFresh(key, prompt, freshWindow, profiles.nameOf(t.profile), why)) }),
       ...(askNewSession && { [NEW_SESSION_SERVER]: createNewSessionServer(Math.round((t.context?.total ?? 0) / 1000), what => newSession.offer(key, t, prompt, images, what)) }),
       ...(!t.head && !plainGroup && { [DELETE_SERVER]: createDeleteServer(p => offerDeleteTopics(key, p)) }),
-      ...(otherOnline.length ? { [COMPUTER_SERVER]: createComputerServer(otherOnline.map(d => d.name), p => suggestComputer(key, p), p => copyFiles(key, topics.get(key), p, abort.signal), otherOnline.filter(d => !isCloud(d.id)).map(d => d.name)) } : {}),
+      ...(otherOnline.length ? { [COMPUTER_SERVER]: createComputerServer(otherOnline.map(d => d.name), p => suggestComputer(key, p), p => copyFiles(key, topics.get(key), p, abort.signal), otherOnline.filter(d => !isCloud(d.id)).map(d => d.name), dev && project ? p => syncBranch(key, p) : undefined) } : {}),
       ...(!t.head && !plainGroup && { [TEAM_SERVER]: createTeamServer(teamOf(key), models.list().map(m => m.family), [profiles.nameOf(t.profile), ...profiles.list().filter(n => n !== profiles.nameOf(t.profile))]) }),
       [SCHEDULE_SERVER]: createScheduleServer(p => scheduleMenu.propose(key, p)),
       // Telegram takes widgets in private chats only, for now
@@ -6909,6 +7002,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         env: profiles.env(t.profile),
         // §13 mode 1: say it up front instead of letting every change bounce off a denial
         append: (dev && project ? systemAppend(dev, project, dev.id, ctx, Object.keys(cfg.remoteMcp)) : offline ? offlineAppend(Object.keys(cfg.remoteMcp), deviceName(t.deviceId!), t.projectId!) : noProjectAppend(Object.keys(cfg.remoteMcp), gateway.devices().map(d => d.name)))
+          + (dev && project && !t.head ? heavyBlock(dev, otherOnline.filter(d => !d.locked), heavy.top(heavyKey(dev.id, project)), true) : '')
           + (bound ? browserBlock(chromeAt!.name, bound.deviceId, directFrom ? dev!.name : undefined) : canAskBrowser ? BROWSER_ASK : '') + (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '') + (turnMode(key) === 'read'
           ? '\n\n# Read-only topic\nThe user set this topic to review and planning only: read and analyse, propose changes as text, do not attempt writes, commands or app changes.'
           : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(teamWays(key)))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),
@@ -7836,6 +7930,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     makeWorktree,
     dropWorktree,
     lookAtWorktrees: lookForMergedWorktrees,
+    checkDisk,
+    syncBranch,
     schedules,
     scheduleTick: () => scheduleMenu.tick(),
     checkExpiry,
@@ -7857,6 +7953,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     async stop() {
       for (const key of [...deferArms.keys()]) disarm(key)
       for (const t of expiryTimers) clearTimeout(t)
+      for (const t of diskTimers) clearTimeout(t)
       for (const t of releaseTimers) clearTimeout(t)
       scheduleMenu.stop()
       folderRetry.stop()

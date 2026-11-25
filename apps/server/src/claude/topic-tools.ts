@@ -127,10 +127,12 @@ export const COMPUTER_SERVER = 'computer'
 export const SUGGEST_COMPUTER = `mcp__${COMPUTER_SERVER}__suggest_computer`
 
 export const COPY_TO_COMPUTER = `mcp__${COMPUTER_SERVER}__copy_files`
+export const SYNC_BRANCH = `mcp__${COMPUTER_SERVER}__sync_branch`
+export type SyncBranch = { computer: string, branch?: string }
 export type CopyFiles = { direction: 'send' | 'fetch', computer: string, path: string, to?: string, project?: string }
 
 // online: where a topic may be offered to go, copyable: where files may be copied to (the cloud is only the first)
-export function createComputerServer(online: string[], suggest: (p: { computer: string, reason: string }) => Promise<string>, copy: (p: CopyFiles) => Promise<string>, copyable = online) {
+export function createComputerServer(online: string[], suggest: (p: { computer: string, reason: string }) => Promise<string>, copy: (p: CopyFiles) => Promise<string>, copyable = online, sync?: (p: SyncBranch) => Promise<string>) {
   return createSdkMcpServer({
     name: COMPUTER_SERVER,
     tools: [tool(
@@ -144,7 +146,15 @@ export function createComputerServer(online: string[], suggest: (p: { computer: 
         project: z.string().optional().describe("The project on the other computer. Default: the one named like this project"),
       },
       async args => ({ content: [{ type: 'text' as const, text: await copy(args) }] }),
-    ), tool(
+    ), ...(sync ? [tool(
+      'sync_branch',
+      `Bring a git branch of this project to the same project on another computer, through its git remote: pushes the branch from here, clones the project there if it isn't there yet (light: blobs as needed, without the folders .worktree-skip names) or fetches into the clone it has, checks the branch out, brings its submodules. For running long or heavy work there with start_agent, on the cloud first. Online now: ${online.join(', ')}. Uncommitted changes don't travel: commit first. Tools the project needs (compilers, runners) are not installed by this: the agent there checks and installs into its home folder.`,
+      {
+        computer: z.string().min(1).max(64).describe('The other computer, its name as listed'),
+        branch: z.string().min(1).max(100).optional().describe('Default: the branch this project is on'),
+      },
+      async args => ({ content: [{ type: 'text' as const, text: await sync(args) }] }),
+    )] : []), tool(
       'suggest_computer',
       `Offer to work on another of the user's computers. Online now: ${online.join(', ')}. Use it when the user asks, or when the task can't be done on this one (Xcode needs a Mac, an app is only there); not for what this computer can do too. The cloud (named Cloud, if listed) is a Linux container on the server for code only: git, Node, Python, no desktop apps and none of the user's files. Offer it when this topic's own computer is off and the work is code; the user picks or clones the project there. The user answers with buttons: go there with this conversation, start an agent there, or stay. End your turn right after calling it; the next message tells you what was chosen.`,
       {

@@ -32,6 +32,10 @@ services:
       - backups:/backups
       - /var/lib/tgcv/update:/update
     networks: [default, cloud]
+    # The bot comes first: with the processors or the memory of the VPS all taken, it is the cloud's work that waits
+    # or goes, never the bot (the cloud's own limits are below)
+    cpu_shares: 2048
+    oom_score_adj: -500
   # The cloud workspace, on with COMPOSE_PROFILES=cloud in .env: an always-on computer for code. Only what it
   # needs reaches it from .env, never the bot token or the backup key
   cloud:
@@ -55,6 +59,8 @@ services:
     # Builds and tests in the cloud can't starve the bot
     mem_limit: ${CLOUD_MEMORY:-2g}
     cpus: ${CLOUD_CPUS:-1}
+    cpu_shares: 512
+    oom_score_adj: 500
     pids_limit: 2048
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

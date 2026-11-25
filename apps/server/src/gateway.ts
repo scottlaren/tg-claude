@@ -61,6 +61,11 @@ export type Device = {
   // It can see and drive its screen for Claude
   screen?: boolean
   shared: string[]
+  // What it has to work with, and how busy it is: where heavy work goes is chosen by these. idleSec: for how long
+  // nobody has touched it; absent when not known
+  cores?: number
+  memGb?: number
+  load?: { busy: number, idleSec?: number, at: number }
 }
 
 export type OpOutcome = { ok: true, result: unknown } | { ok: false, error: OpError }
@@ -335,7 +340,7 @@ export function createGateway({ port, host, registry, pairing, log, cancelWaitMs
         devices.get(m.deviceId)?.ws.terminate()
         conn = {
           id: m.deviceId, name: registry.nameOf(m.deviceId) ?? m.deviceName, os: m.os, shell: m.shell, projects: m.projects, mcp: m.mcp, apps: m.apps,
-          connectedAt: Date.now(), version: m.version, release: m.release, locked: m.locked, keepAwake: m.keepAwake, screen: m.screen, shared: m.shared, ws, alive: true, missed: 0,
+          connectedAt: Date.now(), version: m.version, release: m.release, locked: m.locked, keepAwake: m.keepAwake, screen: m.screen, shared: m.shared, cores: m.cores, memGb: m.memGb, ws, alive: true, missed: 0,
         }
         // The cloud goes by its name in the bot's language, whatever its agent calls itself
         if (conn.id === CLOUD_DEVICE_ID) Object.defineProperty(conn, 'name', { get: () => tr('Cloud', 'Облако'), enumerable: true })
@@ -351,6 +356,7 @@ export function createGateway({ port, host, registry, pairing, log, cancelWaitMs
       if (m.type === 'op.event') onEvent(conn.id, m)
       else if (m.type === 'tunnel.open') openTunnel(conn, streams, opening, m)
       else if (m.type === 'tunnel.data' || m.type === 'tunnel.ack' || m.type === 'tunnel.close') streams.get(m.sid)?.frame(m)
+      else if (m.type === 'load') conn.load = { busy: m.busy, idleSec: m.idleSec, at: Date.now() }
       else if (m.type === 'mcp.update') {
         conn.mcp = m.servers
         log.info('device mcp', { id: conn.id, servers: m.servers.map(s => `${s.name}:${s.status}${s.status === 'connected' ? '/' + s.tools.length : ''}`) })

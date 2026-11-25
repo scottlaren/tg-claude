@@ -25,6 +25,10 @@ export function disk(dir: string) {
   }
 }
 
+// Low: a tenth of the disk or ten gigabytes left, whichever is less room. A full disk stops the bot from writing its
+// own state, and the cloud's clones and runs live on the same disk with nothing to stop them
+export const diskLow = (d: { free: number, total: number } | null) => !!d && (d.free < d.total / 10 || d.free < 10 * 1024 ** 3)
+
 // Bytes and files under a folder; missing folders count as empty
 export async function dirSize(dir: string): Promise<{ bytes: number, files: number }> {
   let bytes = 0
