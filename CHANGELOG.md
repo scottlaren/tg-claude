@@ -2,6 +2,20 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.18.8
+
+- **Claude knows where heavy work is cheaper.** Each computer says what it has (processors, memory), how busy it is and whether someone is working at it. When this computer is busy or a project has heavy commands on record, Claude sees all computers side by side and is told to send long work nobody waits for where there is room.
+- **Heavy commands are measured.** A command that took much processor time is remembered with what it cost; before it runs again Claude sees how long it took here and about how long it would take on each other computer. The figures are rough: they tell minutes from hours.
+- **A branch on another computer in one step.** `sync_branch` pushes the project's branch, clones the project on the other computer if it isn't there (light, without the folders `.worktree-skip` names) or brings its clone up to date, with submodules. Then an agent runs the work there. Uncommitted changes don't travel, and a copy with uncommitted work of its own is left alone.
+- **The bot comes before the cloud's work.** With the server's processors or memory all taken, the cloud's work waits or is the first to go, never the bot. A server whose disk is nearly full says so once a day, and the cloud takes no new projects until there is room.
+
+### Русский
+
+- **Claude знает, где тяжёлую работу выгоднее делать.** Каждый компьютер сообщает, что у него есть (процессоры, память), насколько он занят и работает ли за ним человек. Когда этот компьютер занят или у проекта есть измеренные тяжёлые команды, Claude видит все компьютеры рядом и знает правило: долгую работу, которой никто не ждёт, отправлять туда, где свободно.
+- **Тяжёлые команды измеряются.** Команда, съевшая много процессорного времени, запоминается вместе с ценой; перед новым запуском Claude видит, сколько она шла здесь и примерно сколько займёт на каждом другом компьютере. Цифры грубые: отличают минуты от часов.
+- **Ветка на другом компьютере за один шаг.** `sync_branch` пушит ветку проекта, клонирует проект на другом компьютере, если его там нет (легко, без папок из `.worktree-skip`), или подтягивает его копию, вместе с подмодулями. После этого агент запускает работу там. Незакоммиченное не переезжает, а копию с чужой незакоммиченной работой бот не трогает.
+- **Бот важнее работы в облаке.** Когда процессоры или память сервера заняты целиком, ждёт или первой завершается работа облака, а не бот. Сервер с почти полным диском говорит об этом раз в сутки, и облако не принимает новые проекты, пока место не появится.
+
 ## 0.18.7
 
 - **Another computer's Chrome, worked in directly.** A topic that moved to another account at a spent limit reached the Chrome of the computer on that account only through errands: a new short session for every request, retelling what it saw. Now that Chrome is in the topic's own session, step by step, like its own; the answer says which computer's Chrome did the work.
