@@ -2,6 +2,14 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.18.11
+
+- **Changes to Claude's instructions reach a conversation under way.** A conversation keeps the instructions it began with: a night shift, a topic set to read-only, a browser switched on, new decisions of a workspace, a new skill or an edited CLAUDE.md were never seen by a conversation already going, until it was compacted or started anew. The bot now keeps count of what each conversation was told and says a change in Claude's next turn, once. A conversation that began before this release is told what is in force the first time it goes on.
+
+### Русский
+
+- **Изменения инструкций Claude доходят до идущего разговора.** Разговор живёт с теми инструкциями, с которыми начался: ночную смену, режим «только чтение», включённый браузер, новые решения рабочей группы, новый скилл или правку CLAUDE.md уже идущий разговор не видел, пока его не сжимали или не начинали заново. Теперь бот ведёт учёт того, что сказано каждому разговору, и сообщает об изменении в следующем ходе Claude, один раз. Разговор, начатый до этого выпуска, получает действующее при первом же продолжении.
+
 ## 0.18.10
 
 - **The computers reach a head already at work.** What each computer has and how busy it is was written into Claude's instructions, and a conversation that goes on keeps the instructions it began with: a head in the middle of its work never saw them. They are now the answer of a tool, `where_to_run`, read at the moment it is asked, with the rule for moving heavy work in the tool's own description. An agent is told only what its computer has, which doesn't change.
