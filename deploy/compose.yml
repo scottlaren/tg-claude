@@ -33,8 +33,9 @@ services:
       - /var/lib/tgcv/update:/update
     networks: [default, cloud]
     # The bot comes first: with the processors or the memory of the VPS all taken, it is the cloud's work that waits
-    # or goes, never the bot (the cloud's own limits are below)
-    cpu_shares: 2048
+    # or goes, never the bot (the cloud's own limits are below). 64 to 1, not the 4 to 1 it began with: speech is
+    # transcribed here on every processor at once, and with the cloud busy on four of six it took a third longer
+    cpu_shares: 8192
     oom_score_adj: -500
   # The cloud workspace, on with COMPOSE_PROFILES=cloud in .env: an always-on computer for code. Only what it
   # needs reaches it from .env, never the bot token or the backup key
@@ -59,7 +60,7 @@ services:
     # Builds and tests in the cloud can't starve the bot
     mem_limit: ${CLOUD_MEMORY:-2g}
     cpus: ${CLOUD_CPUS:-1}
-    cpu_shares: 512
+    cpu_shares: 128
     oom_score_adj: 500
     pids_limit: 2048
     cap_drop: [ALL]

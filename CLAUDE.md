@@ -12,6 +12,11 @@ history: `CHANGELOG.md`, setup: `README.md`.
   (`install*.ts`, `install-agent.sh`, `install-agent.ps1`)
 - `apps/agent/src`: the agent: tools (`executor.ts`, `files.ts`, `command.ts`), working folders (`workspace.ts`,
   `zones.ts`), autostart (`service.ts`), self-update (`self-update.ts`), browsers (`chrome*.ts`)
+- Companion chats (`apps/server/src/telegram/companion.ts`, `claude/companion.ts`, `companions.ts`): groups where the bot
+  only talks, to everyone in them. They are not workspaces and are kept in a store of their own. Every update of such a
+  chat stops in `companion.handle` (the corridor at the top of `bot.ts`); a session there has its own instructions and
+  no tool that reaches the server or a computer: it searches, and reads pages at public addresses. Keep it so: nothing built for the
+  owner's work may start answering in a companion chat
 - `packages/protocol/src/index.ts`: the server ↔ agent protocol. `DEVICE_TOOLS` are Claude's tools; `DEVICE_OPS`
   are operations only the bot sends at the user's taps (working folders, updates, sign-in window) and are never
   offered to Claude

@@ -259,9 +259,19 @@ test('the bot joins only at the hand of its owner, and stops everything when it 
   assert.equal(h.workspaces.get(STRANGERS_GROUP), undefined)
   h.reset()
 
+  // Added, the bot is nothing yet: it asks what the group is to be, and only its owner answers
   await h.membership(GROUP, OWNER, 'administrator')
+  assert.equal(h.workspaces.get(GROUP), undefined)
+  assert.match(textOf(h.said()[0]), /What am I here for/)
+  assert.match(textOf(h.said()[0]), /data="ws:new"[\s\S]*data="cmp:new"/)
+  h.reset()
+  await h.tap(GROUP, STRANGER, 'ws:new')
+  assert.deepEqual(h.said(), [])
+  assert.equal(h.workspaces.get(GROUP), undefined, 'a stranger chooses nothing')
+  await h.tap(GROUP, OWNER, 'ws:new')
   assert.ok(h.workspaces.get(GROUP))
-  assert.match(textOf(h.said()[0]), /Roblox/)
+  assert.deepEqual(h.said().map(c => c.method), ['deleteMessage', 'sendRichMessage'], 'the question goes, the card comes')
+  assert.match(textOf(h.said()[1]), /Roblox/)
   h.reset()
   // A later change of rights doesn't show the card again; a stranger can't take the group over by it
   await h.membership(GROUP, STRANGER, 'administrator')
@@ -1114,6 +1124,8 @@ test('a group that becomes a workspace gets a picture, unless it has one; a refu
   const photos = (h: ReturnType<typeof start>) => h.calls.filter(c => c.method === 'setChatPhoto')
   const plain = start()
   await plain.membership(GROUP, OWNER, 'administrator')
+  assert.equal(photos(plain).length, 0, 'not while it is nothing yet')
+  await plain.tap(GROUP, OWNER, 'ws:new')
   assert.equal(photos(plain).length, 1)
   assert.equal(photos(plain)[0].payload.chat_id, GROUP)
   assert.ok(existsSync(GROUP_AVATAR_FILE))
@@ -1126,6 +1138,7 @@ test('a group that becomes a workspace gets a picture, unless it has one; a refu
     ? { ok: true, result: { id: GROUP, type: 'supergroup', title: 'Roblox', is_forum: true, photo: { small_file_id: 'a', small_file_unique_id: 'b', big_file_id: 'c', big_file_unique_id: 'd' } } } as never
     : prev(method, payload)))
   await pictured.membership(GROUP, OWNER, 'administrator')
+  await pictured.tap(GROUP, OWNER, 'ws:new')
   assert.equal(photos(pictured).length, 0, 'the group keeps its own')
   assert.ok(pictured.workspaces.get(GROUP))
 
@@ -1134,6 +1147,7 @@ test('a group that becomes a workspace gets a picture, unless it has one; a refu
     ? { ok: false, error_code: 400, description: 'Bad Request: not enough rights to change chat photo' } as never
     : prev(method, payload)))
   await refused.membership(GROUP, OWNER, 'administrator')
+  await refused.tap(GROUP, OWNER, 'ws:new')
   assert.ok(refused.workspaces.get(GROUP), 'still a workspace')
   assert.ok(refused.said().some(c => /Project|Проект/.test(textOf(c))), 'and its card is there')
 })
@@ -1509,6 +1523,7 @@ test('a group that leaves and comes back finds its decisions', async () => {
   assert.equal(h.workspaces.get(GROUP), undefined)
   assert.equal(h.decisions.promptBlock(GROUP), '')
   await h.membership(GROUP, OWNER, 'administrator')
+  await h.tap(GROUP, OWNER, 'ws:new')
   assert.ok(h.workspaces.get(GROUP))
   assert.match(h.decisions.promptBlock(GROUP), /Kept/)
 })

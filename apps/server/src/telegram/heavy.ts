@@ -11,11 +11,17 @@ const HEAVY_CORE_SEC = 300
 const HEAVY_WALL_SEC = 30
 const KEEP = 12
 const TTL_MS = 30 * 86400_000
+// Shown once it has been heavy twice: a command put together for one occasion never comes back, and a list of those
+// tells nothing about the next run
+const SHOWN_AFTER = 2
 
-// The same command with other numbers is the same command: a seed, a count, a port
+// The same command with other numbers is the same command: a seed, a count, a port. And so it is with another filter
+// behind it or from another folder: what is cut off is where its output goes (a pipe, a redirection, and whatever
+// follows) and a cd in front, which say nothing of what it costs
 export function commandKey(p: { command?: string, program?: string, args?: string[] }) {
   const text = (p.command ?? [p.program, ...(p.args ?? [])].join(' ')).replace(/\s+/g, ' ').trim()
-  return text.replace(/\d+/g, '#').slice(0, 120)
+  const bare = p.command ? text.replace(/^cd \S+ (&&|;) /, '').replace(/ (\d?>>?|\|)[ &\d].*$/, '').trim() : text
+  return (bare || text).replace(/\d+/g, '#').slice(0, 120)
 }
 
 export const isHeavy = (r: { durationMs: number, coreSec?: number }) => (r.coreSec ?? 0) >= HEAVY_CORE_SEC && r.durationMs >= HEAVY_WALL_SEC * 1000
@@ -50,6 +56,6 @@ export function createHeavyStore(file: string, now = Date.now) {
       save()
       return true
     },
-    top: (repo: string, n = 4) => (all[repo] ?? []).filter(h => now() - h.at < TTL_MS).slice(0, n),
+    top: (repo: string, n = 4) => (all[repo] ?? []).filter(h => now() - h.at < TTL_MS && h.runs >= SHOWN_AFTER).slice(0, n),
   }
 }

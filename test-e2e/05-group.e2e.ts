@@ -38,6 +38,8 @@ for (const language of ['en', 'ru'] as const) {
     test('the bot added to a group sets it up; its card picks computer, project, permissions', async () => {
       const t = Date.now()
       s.tg.addGroup(s.user, GROUP, 'E2E team')
+      // Added, the bot first asks what the group is to be
+      await s.tap(await until('the question', () => s.tg.sent.find(m => m.at >= t && m.chat.id === GROUP && m.buttons.flat().some(b => b.data === 'ws:new'))), 'ws:new')
       const card = await until('the card', () => s.tg.sent.find(m => m.at >= t && m.chat.id === GROUP && m.buttons.flat().some(b => b.data === 'ws:dev')))
       await s.tap(card, 'ws:dev')
       await until('the list of computers', () => s.tg.sent.find(m => m.message_id === card.message_id)!.buttons.flat().some(b => b.data === `ws:dev:${device}`))

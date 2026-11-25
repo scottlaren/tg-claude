@@ -198,6 +198,8 @@ for (const language of ['en', 'ru'] as const) {
       const G = GROUP - 1
       let t = Date.now()
       s.tg.addGroup(s.user, G, 'Busy group')
+      // Added, the bot first asks what the group is to be
+      await s.tap(await until('the question', () => s.tg.sent.find(m => m.at >= t && m.chat.id === G && m.buttons.flat().some(b => b.data === 'ws:new'))), 'ws:new')
       const card = await until('the card', () => s.tg.sent.find(m => m.at >= t && m.chat.id === G && m.buttons.flat().some(b => b.data === 'ws:dev')))
       void card
       t = Date.now()

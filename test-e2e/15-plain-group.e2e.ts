@@ -29,6 +29,8 @@ describe('a group with no topics', () => {
   test('adding the bot brings the card at once; what it picks is the conversation\'s own, and a message just works', async () => {
     const t = Date.now()
     s.tg.addPlainGroup(s.user, BASIC, 'Light project')
+    // Added, the bot first asks what the group is to be
+    await s.tap(await until('the question', () => s.tg.sent.find(m => m.at >= t && m.chat.id === BASIC && m.buttons.flat().some(b => b.data === 'ws:new'))), 'ws:new')
     const card = await until('the card', () => s.tg.sent.find(m => m.at >= t && m.chat.id === BASIC && m.buttons.flat().some(b => b.data === 'ws:dev')))
     assert.match(card.text, /one conversation/)
     assert.doesNotMatch(card.text, /New topics start/)

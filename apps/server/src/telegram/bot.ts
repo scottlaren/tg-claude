@@ -1,9 +1,9 @@
 import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy'
 import type { Message, ReactionTypeEmoji, ReplyParameters } from 'grammy/types'
 import { randomInt, randomBytes, randomUUID, createHash } from 'node:crypto'
-import { readFileSync, readdirSync, rmSync, writeFileSync, statSync, mkdtempSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync, writeFileSync, statSync, mkdtempSync, mkdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { tmpdir, freemem, totalmem, platform, release } from 'node:os'
+import { tmpdir, freemem, totalmem, platform, release, hostname } from 'node:os'
 import { disk, diskLow, dirSize, claudeVersions, bytes, duration, SERVER_VERSION } from '../diag.ts'
 import { listBackups } from '../backup.ts'
 import { pullFile, relayFile } from '../transfer.ts'
@@ -69,7 +69,12 @@ import { createFlightStore } from './flights.ts'
 import { failureText } from './failure.ts'
 import { createRecovery } from './recovery.ts'
 import { createGroupLimit, createStatusBubble, isGroupChat, limitTransformer, quietMark } from './group-limit.ts'
-import { createWorkspaceMenu, groupLink, WORKSPACE_START } from './workspace-menu.ts'
+import { createWorkspaceMenu, groupLink, WORKSPACE_START, WORKSPACE_NEW } from './workspace-menu.ts'
+import { createCompanion, COMPANION_NEW } from './companion.ts'
+import { createCompanionStore } from '../companions.ts'
+import { findPictures } from '../commons.ts'
+import { companionTurn } from '../claude/companion.ts'
+import type { Secret } from './leak.ts'
 import { createDecisionsMenu } from './decisions-menu.ts'
 import { createQuietMenu, createQuietStore, keepLoud, keepSilent, quietLabel, quietTransformer } from './quiet.ts'
 import { notStickerCaption, prepareSticker, type StickerCheck } from './sticker.ts'
@@ -315,7 +320,7 @@ type Upload = { id: string, kind: MediaKind, name: string, mime: string, data: B
 // note: why it can't come at all, which goes in the text. Otherwise the file, and whether it fits
 type PulledSticker = { ref: MediaRef<'sticker'>, note?: string, file?: { name: string, mime: string, data: Buffer }, check?: StickerCheck }
 
-export function createBot({ cfg, topics, workspaces, gateway, registry, pairing, log, workDir, inbox, media, browsers, profiles, owners, sandbox, updates, bundles, runTurn: startTurn = runTurn, hear = transcribeData, splitVoice = splitTasks }: {
+export function createBot({ cfg, topics, workspaces, gateway, registry, pairing, log, workDir, inbox, media, browsers, profiles, owners, sandbox, updates, bundles, runTurn: startTurn = runTurn, hear = transcribeData, splitVoice = splitTasks, companionTurn: askCompanion = companionTurn, companionWeb = { findPictures, download: fetchWebMedia } }: {
   cfg: ServerConfig, topics: TopicStore, workspaces: WorkspaceStore, gateway: Gateway, registry: DeviceRegistry, pairing: Pairing, log: Log, workDir: string,
   inbox: Inbox, media: MediaConfig, browsers: BrowserStore, profiles: Profiles, owners: Owners, sandbox?: Sandbox, updates: Updates,
   // The agent's archive: computers installed from /pair update from it, checked against its checksum
@@ -325,6 +330,10 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   // The same for speech recognition and the helper that sorts a long voice message
   hear?: typeof transcribeData,
   splitVoice?: typeof splitTasks,
+  // And for an answer in a companion chat
+  companionTurn?: typeof companionTurn,
+  // Where a companion chat's pictures come from
+  companionWeb?: { findPictures: (query: string) => Promise<{ title: string, url: string }[]>, download: (url: string) => Promise<{ name: string, data: Buffer }> },
 }) {
   const bot = new Bot(cfg.token, cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined)
   const api = bot.api
@@ -352,7 +361,20 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     // Typing a command relies on these suggestions, so everything that works here is listed
     api.setMyCommands(commands().filter(c => !PRIVATE_ONLY.includes(c.command)), { scope: { type: 'all_group_chats' } }),
     ...workspaces.list().filter(w => w.plain).map(w => groupCommands(w.chatId, true)),
+    companion.commandsFor(),
   ])
+  // Groups where the bot only talks, apart from workspaces: nothing made for the owner's work finds them
+  const companions = createCompanionStore(cfg.dataDir)
+  // Speech somebody waits for, counted: what is heard for nobody in particular lets it go first
+  let hearingNow = 0
+  const hearFirst: typeof hear = async (data, c) => {
+    hearingNow++
+    try {
+      return await hear(data, c)
+    } finally {
+      hearingNow--
+    }
+  }
   const groupLimit = createGroupLimit()
   api.config.use(limitTransformer(groupLimit))
   loadLang(join(cfg.dataDir, 'language.json'))
@@ -525,6 +547,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   const memberCounts = new Map<number, { n: number, at: number }>()
   async function mayReveal(chatId: number) {
     if (!isGroupChat(chatId)) return true
+    // Whoever is in a companion chat today, it is not the owner's own place
+    if (companions.get(chatId)) return false
     let c = memberCounts.get(chatId)
     if (!c || Date.now() - c.at > 60_000) {
       c = { n: await api.getChatMemberCount(chatId).catch(() => Infinity), at: Date.now() }
@@ -769,7 +793,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   function poll(name = botName) {
     botName = name
     bot.start({
-      allowed_updates: ['message', 'edited_message', 'message_reaction', 'callback_query', 'stopped_message_generation', 'my_chat_member', 'widget_query'] as never,
+      allowed_updates: ['message', 'edited_message', 'message_reaction', 'callback_query', 'stopped_message_generation', 'my_chat_member', 'chat_member', 'widget_query'] as never,
       onStart: () => log.info(`bot @${botName} polling`),
     }).catch(e => {
       log.error('polling stopped', e.message)
@@ -783,9 +807,15 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     seenUpdates.add(ctx.update.update_id)
     if (seenUpdates.size > DEDUP_SIZE) seenUpdates.delete(seenUpdates.values().next().value!)
 
-    if (ctx.update.my_chat_member) return workspaceMenu.membership(ctx)
+    if (ctx.update.my_chat_member) return companion.owns(ctx.update.my_chat_member.chat.id) ? companion.membership(ctx) : workspaceMenu.membership(ctx)
+    // Who joins and leaves matters in one case only: the owner leaving a companion chat
+    if (ctx.update.chat_member) return companion.member(ctx)
     const wq = (ctx.update as { widget_query?: WidgetQuery }).widget_query
     if (wq) return widgetQuery(wq)
+    // A companion chat is a closed corridor: whatever happens in it goes to the companion and nowhere further, the
+    // owner's messages and taps too. Nothing below this line ever sees such a chat
+    if (ctx.chat && ctx.message?.migrate_from_chat_id && companion.owns(ctx.message.migrate_from_chat_id)) return companion.moved(ctx.message.migrate_from_chat_id, ctx.chat.id)
+    if (ctx.chat && companion.owns(ctx.chat.id)) return companion.handle(ctx)
     // Telegram says it in both chats, and whichever comes first does the move
     if (ctx.chat && ctx.message?.migrate_to_chat_id) return moveChat(ctx.chat.id, ctx.message.migrate_to_chat_id)
     if (ctx.chat && ctx.message?.migrate_from_chat_id) return moveChat(ctx.message.migrate_from_chat_id, ctx.chat.id)
@@ -815,7 +845,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       return
     }
     // A group counts once it is a workspace, and /workspace is how it becomes one
-    const openChat = !ctx.chat || ctx.chat.type === 'private' || !!workspaces.get(ctx.chat.id) || /^\/workspace(@\w+)?(\s|$)/.test(text)
+    // And the two buttons under the question the bot asks when it is added: what the group is to be
+    const choosing = ctx.callbackQuery?.data === WORKSPACE_NEW || ctx.callbackQuery?.data === COMPANION_NEW
+    const openChat = !ctx.chat || ctx.chat.type === 'private' || !!workspaces.get(ctx.chat.id) || /^\/workspace(@\w+)?(\s|$)/.test(text) || choosing
     if (!id || !owners.has(id) || !openChat) {
       if (ctx.from && ctx.chat?.type === 'private' && !ctx.callbackQuery && !ctx.messageReaction) await usersMenu.stranger(ctx.from).catch(e => log.warn('account offer', (e as Error).message))
       if (id) log.warn('rejected', { id, name: ctx.from?.username, hint: 'add the id to OWNER_IDS if this is you' })
@@ -7728,7 +7760,60 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     topics.set(key, { mode: w.mode ?? t.mode, model: w.model ?? t.model })
     if (w.deviceId && w.projectId && (t.deviceId !== w.deviceId || t.projectId !== w.projectId)) topics.bind(key, w.deviceId, w.projectId)
   }
-  const workspaceMenu = createWorkspaceMenu({ bot, owners, workspaces, models, gateway, log, sendChoice, editRich, sendRich, dropChat, applied: applyToPlainGroup, topicsChanged: (chatId, plain) => background(groupCommands(chatId, plain)), canMove: (chatId, topicId) => canMoveTopic(topicKey(chatId, topicId)), nightOn: shifts.inChat, quietOn: quiet.on })
+  // What Claude Code tells every session about the account and the machine: no answer to a companion chat may carry it.
+  // An address is asked for once an hour; an account whose address can't be had is one whose answers can't be checked
+  const companionRoom = join(tmpdir(), 'room')
+  const companionMails = new Map<string, { at: number, email: string }>()
+  async function companionSecrets(profile: string): Promise<Secret[]> {
+    for (const p of profiles.list()) {
+      const kept = companionMails.get(p)
+      if (kept && Date.now() - kept.at < 3600_000) continue
+      const s = await profiles.status(p).catch(() => null)
+      if (s?.email) companionMails.set(p, { at: Date.now(), email: s.email })
+      else if (p === profile && !kept && (!s || s.error)) throw new Error("the account's address could not be asked for, so its answers can't be checked")
+    }
+    return [
+      ...[...companionMails.values()].map(m => ({ kind: 'e-mail' as const, value: m.email })),
+      { kind: 'system', value: release() }, { kind: 'system', value: hostname() },
+      ...[companionRoom, workDir, cfg.profileDir, dirname(cfg.profileDir)].map(value => ({ kind: 'folder' as const, value })),
+    ]
+  }
+  const companion = createCompanion({
+    bot, store: companions, owners, models, profiles, log, zone: () => schedules.zone(), turn: askCompanion, secrets: companionSecrets, background, sendChoice, editRich,
+    taken: chatId => !!workspaces.get(chatId),
+    cwd: () => {
+      mkdirSync(companionRoom, { recursive: true })
+      return companionRoom
+    },
+    say: (chatId, thread, md, extra) => sendRich(chatId, thread, md, extra),
+    hearVoice: async (fileId, size) => {
+      const missing = missingForSpeech(media)
+      if (missing.length) throw new Error(`the server has no ${missing.join(', ')}`)
+      const text = await hearFirst(await download(fileId, size), media)
+      if (!text) throw new Error('no speech recognized')
+      return text
+    },
+    // Voice messages of a chat that nobody asked about: never beside one that is waited for, and on half the threads,
+    // so that one arriving meanwhile is not held up by much
+    hearQuietly: async (fileId, size) => {
+      if (missingForSpeech(media).length) throw new Error('the server cannot hear speech')
+      const data = await download(fileId, size)
+      while (hearingNow > 0) await pause(1000)
+      return hear(data, { ...media, threads: Math.max(1, Math.floor(media.threads / 2)) })
+    },
+    // A photo as Telegram re-encoded it: nothing a stranger sends is opened by a program on the server
+    picture: async (fileId, size) => asImage(await download(fileId, size), 'image/jpeg'),
+    // The same two conditions as for the owner's own reading: the firewall that keeps the inside of the server
+    // unreachable is up, and the name leads outside
+    openable: async url => {
+      if (sandbox?.state().state === 'open') return 'Reading pages is switched off on the server right now. Say so.'
+      return await resolvedPublicUrl(url) ? null : 'Only public internet addresses open from here.'
+    },
+    findPictures: query => companionWeb.findPictures(query),
+    download: url => companionWeb.download(url),
+  })
+  const companionTimer = setInterval(() => void companion.tick().catch(e => log.warn('companion tick', (e as Error).message)), 30_000).unref()
+  const workspaceMenu = createWorkspaceMenu({ companions: () => companion.list(), bot, owners, workspaces, models, gateway, log, sendChoice, editRich, sendRich, dropChat, applied: applyToPlainGroup, topicsChanged: (chatId, plain) => background(groupCommands(chatId, plain)), canMove: (chatId, topicId) => canMoveTopic(topicKey(chatId, topicId)), nightOn: shifts.inChat, quietOn: quiet.on })
   // /night was a switch of its own, and it outlived the night: whatever it left on with no shift kept to branches goes
   for (const chatId of night.chats()) {
     if (!shifts.all().some(sh => sh.state === 'running' && !sh.release && parseKey(sh.key).chatId === chatId)) {
@@ -7890,7 +7975,10 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       const missing = missingForSpeech(media)
       if (missing.length) throw new Error(tr(`can't transcribe: the server has no ${missing.join(', ')}`, `не расшифровать: на сервере нет ${missing.join(', ')}`))
       const v = ctx.msg.voice
-      const text = await hear(await download(v.file_id, v.file_size), media)
+      const began = Date.now()
+      const text = await hearFirst(await download(v.file_id, v.file_size), media)
+      // How long hearing takes against how long was said: the one sign that the server has too little to do it with
+      log.info('voice heard', { audioSec: v.duration, tookSec: Math.round((Date.now() - began) / 100) / 10 })
       if (!text) throw new Error(tr('no speech recognized', 'речь не распознана'))
       // The user sees what was heard, so a misrecognised word is caught before Claude acts on it
       const shown = await api.sendMessage(ctx.chat.id, foldedQuote(`🎙 ${masked(ctx.chat.id, topicOf(ctx.msg), text)}`, PLAIN_LIMIT - 200), { ...where(topicOf(ctx.msg)), ...HTML, reply_parameters: { message_id: ctx.msg.message_id } }).catch(() => {})
@@ -7978,6 +8066,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     bot,
     liveOf,
     decisions: decisionsMenu,
+    companion,
     night,
     messageTopic,
     renameTopic,
@@ -8025,6 +8114,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       folderRetry.stop()
       renders.stop()
       clearInterval(boardTimer)
+      clearInterval(companionTimer)
+      companion.stop()
       voiceTasks.stop()
       // Not stopped: a Stop would kill the commands on the computers, which are the reason to carry on after this
       closing = true

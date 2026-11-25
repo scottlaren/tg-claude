@@ -12,6 +12,12 @@ test('the same command with other numbers is the same command', () => {
   assert.equal(commandKey({ command: 'lune  run tools/soak/one 1301 hider 8 1' }), 'lune run tools/soak/one # hider # #')
   assert.equal(commandKey({ program: 'lune', args: ['run', 'tests', '--child', 'cans'] }), 'lune run tests --child cans')
   assert.equal(commandKey({ command: 'x'.repeat(300) }).length, 120)
+  // Where its output goes, and where it was started from, are not the command
+  assert.equal(commandKey({ command: 'npm test 2>&1 | grep -E "^(pass|fail)" | head -8; git status --short' }), 'npm test')
+  assert.equal(commandKey({ command: 'cd /c/code/game && lune run tests > /tmp/out.log' }), 'lune run tests')
+  assert.equal(commandKey({ command: 'lune run tests | tail -5' }), 'lune run tests')
+  assert.equal(commandKey({ command: 'npx tsc -p tsconfig.json && npm test' }), 'npx tsc -p tsconfig.json && npm test', 'a chain is one piece of work')
+  assert.equal(commandKey({ program: 'grep', args: ['-c', 'a|b', 'x > y'] }), 'grep -c a|b x > y', 'arguments are taken as they are')
 })
 
 test('heavy is much processor time over more than a moment', () => {
@@ -41,8 +47,9 @@ test('heavy commands are remembered by repository, the heaviest first, and forgo
   assert.equal(store.note('pc:game', { name: 'Old' }, { command: 'lune run sweep' }, { durationMs: 900_000, coreSec: 20_000 }), false, 'a computer of unknown size')
   assert.deepEqual(store.top('pc:game').map(h => [h.cmd, h.wallSec, h.coreSec, h.runs]), [
     ['lune run tools/soak/one # hider', 800, 18_000, 2],
-    ['lune run tests', 120, 2880, 1],
-  ])
+  ], 'one that was heavy once is kept and not shown: it may never run again')
+  assert.equal(store.note('pc:game', PC, { command: 'lune run tests | tail -3' }, { durationMs: 130_000, coreSec: 3000 }), true)
+  assert.deepEqual(store.top('pc:game').map(h => [h.cmd, h.wallSec, h.runs]), [['lune run tools/soak/one # hider', 800, 2], ['lune run tests', 130, 2]], 'heavy again: shown, as it last was')
   assert.deepEqual(store.top('pc:other'), [])
   assert.equal(createHeavyStore(file, () => at).top('pc:game').length, 2, 'kept over a restart')
   at += 31 * 86400_000

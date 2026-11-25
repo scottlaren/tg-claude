@@ -17,7 +17,9 @@ const TAG = 16
 // The state worth keeping; attachments, logs, whisper and caches are temporary or rebuilt
 // owners.json too: without it a restored server has no owner and the install's claim link works again
 // workspaces.json: decisions and night mode belong to a group, which only this says is a workspace
-const ITEMS = ['topics.json', 'devices.json', 'browsers.json', 'owners.json', 'schedule.json', 'workspaces.json', 'context-trust.json', 'language.json', 'surveys.json', 'decisions', 'night.json', 'profiles']
+// companions.json: which groups the bot only talks in, and how. What people said there (data/companion) is not the
+// owner's to keep copies of: it stays out
+const ITEMS = ['topics.json', 'devices.json', 'browsers.json', 'owners.json', 'schedule.json', 'workspaces.json', 'companions.json', 'context-trust.json', 'language.json', 'surveys.json', 'decisions', 'night.json', 'profiles']
 const EXCLUDE = ['profiles/*/cache', 'profiles/*/backups', '*.tmp']
 export const KEEP_DAYS = 7
 const NAME = /^backup-(\d{4}-\d{2}-\d{2})-(\d{4})\.tgcv$/

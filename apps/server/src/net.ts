@@ -161,7 +161,7 @@ export function pinnedFetch(lookup: Lookup = systemLookup): typeof fetch {
 }
 
 // Wikimedia's policy wants a client name with a contact; anonymous-looking agents get stricter limits
-const USER_AGENT = 'tg-claude/0.1 (https://github.com/scottlaren/tg-claude; personal Telegram client)'
+export const USER_AGENT = 'tg-claude/0.1 (https://github.com/scottlaren/tg-claude; personal Telegram client)'
 const ATTEMPTS = 3
 const MAX_RETRY_WAIT_MS = 10_000
 const MAX_REDIRECTS = 5

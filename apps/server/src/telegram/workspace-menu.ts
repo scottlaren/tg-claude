@@ -24,6 +24,9 @@ const LEAVING_GRACE_MS = 15_000
 const PROJECTS_SHOWN = 16
 const NONE = '-'
 export const WORKSPACE_START = 'ws'
+export const WORKSPACE_NEW = 'ws:new'
+// The same as in companion.ts, which this file can't import without a circle
+const COMPANION_NEW = 'cmp:new'
 
 export const isPlainGroup = (chat: { type: string, is_forum?: boolean }) => chat.type !== 'supergroup' || !chat.is_forum
 
@@ -79,7 +82,9 @@ const keyboardOf = (rows: RichButton[][]) => {
   return kb
 }
 
-export function createWorkspaceMenu({ bot, owners, workspaces, models, gateway, log, sendChoice, editRich, sendRich, dropChat, canMove, nightOn, quietOn, applied, topicsChanged }: {
+export function createWorkspaceMenu({ bot, owners, workspaces, models, gateway, log, sendChoice, editRich, sendRich, dropChat, canMove, nightOn, quietOn, applied, topicsChanged, companions = () => [] }: {
+  // Groups where the bot only talks: listed next to the workspaces, each owner seeing their own
+  companions?: () => { chatId: number, key: string, title: string, owner: number, on: boolean }[]
   bot: Bot
   owners: Owners
   workspaces: WorkspaceStore
@@ -139,8 +144,33 @@ export function createWorkspaceMenu({ bot, owners, workspaces, models, gateway, 
     return sent
   }
 
+  // Added to a group, the bot asks what it is there for before it becomes anything: a chat of other people is no place
+  // for the owner's projects, and a card about computers and permissions would be the first thing they all see
+  function offer(chatId: number) {
+    const rows: RichButton[][] = [[{ text: tr('🗂 Workspace', '🗂 Воркспейс'), data: WORKSPACE_NEW }], [{ text: tr('💬 Companion', '💬 Собеседник'), data: COMPANION_NEW }]]
+    return sendChoice(chatId, undefined, [
+      tr('### 👋 What am I here for?', '### 👋 Зачем я здесь?'),
+      [
+        tr('- 🗂 **Workspace**: your projects and agents. Only you give me tasks.', '- 🗂 **Воркспейс**: твои проекты и агенты. Задачи даёшь только ты.'),
+        tr('- 💬 **Companion**: I answer everyone in the chat when they address me. No computers, files or commands: I only talk.', '- 💬 **Собеседник**: отвечаю всем в чате, когда ко мне обращаются. Без компьютеров, файлов и команд: только разговор.'),
+      ].join('\n'),
+      tr('The one who added me chooses.', 'Выбирает тот, кто меня добавил.'),
+    ].join('\n\n'), rows, keyboardOf(rows))
+  }
+
+  bot.callbackQuery(WORKSPACE_NEW, async ctx => {
+    const chat = ctx.chat
+    if (!chat || chat.type === 'private' || !owners.has(ctx.from.id)) return ctx.answerCallbackQuery()
+    if (workspaces.get(chat.id) || companions().some(c => c.chatId === chat.id)) return ctx.answerCallbackQuery(tr('No longer relevant', 'Уже неактуально'))
+    await ctx.answerCallbackQuery()
+    const asked = ctx.callbackQuery.message
+    if (asked) await api.deleteMessage(chat.id, asked.message_id).catch(() => {})
+    await setup(chat.id, topicOf(asked as Message | undefined), ctx.from.id, true)
+  })
+
   function showList(ctx: Context) {
     const list = workspaces.list()
+    const chats = ctx.chat!.type === 'private' ? companions().filter(c => c.owner === ctx.from?.id) : []
     const topicId = topicOf(ctx.msg as Message | undefined)
     // A topic needs a group with topics to move to
     const targets = list.filter(w => !w.plain)
@@ -148,6 +178,7 @@ export function createWorkspaceMenu({ bot, owners, workspaces, models, gateway, 
     const kb = new InlineKeyboard()
     // An ordinary keyboard: a group's id can pass for a card number, and only the text of a message gets masked
     if (movable) for (const w of targets) kb.text(tr(`➡️ Move this topic to ${w.title}`, `➡️ Перенести этот топик в ${w.title}`), `wm:${w.chatId}`).row()
+    for (const c of chats) kb.text(`💬 ${c.title}${c.on ? '' : tr(' · off', ' · выключен')}`, `cmp:${c.key}:home`).row()
     kb.url(tr('➕ Add a group', '➕ Добавить группу'), addLink(bot.botInfo.username))
     return sendRich(ctx.chat!.id, topicId, [
       tr('### 🗂 Workspaces', '### 🗂 Воркспейсы'),
@@ -158,7 +189,9 @@ export function createWorkspaceMenu({ bot, owners, workspaces, models, gateway, 
       [
         tr('1. Create a group. For several conversations and agents, turn on Topics in its settings.', '1. Создай группу. Для нескольких разговоров и агентов включи в её настройках «Темы».'),
         tr('2. Tap the button and choose that group: I join with the rights I need.', '2. Нажми кнопку и выбери эту группу: я войду с нужными правами.'),
+        tr('3. In the group I ask what I am there for. A chat with other people is a 💬 companion: I answer everyone who addresses me, and have no computer, file or command there.', '3. В группе я спрошу, зачем я здесь. Чат с другими людьми — это 💬 собеседник: отвечаю всем, кто ко мне обращается, без компьютеров, файлов и команд.'),
       ].join('\n'),
+      ...(chats.length ? [tr('💬 The buttons below open the settings of your companion chats.', '💬 Кнопки ниже открывают настройки твоих чатов-собеседников.')] : []),
       ...(movable ? [tr('Moving carries the conversation over: Claude remembers it, but the messages stay here.', 'При переносе разговор переезжает: Claude его помнит, а сообщения остаются здесь.')] : []),
       tr('Answers in a group appear whole, with a live status while Claude works: Telegram has no drafts there.', 'В группе ответ приходит целиком, а пока Claude работает, виден живой статус: черновиков там у Telegram нет.'),
     ].join('\n\n'), { reply_markup: kb })
@@ -264,7 +297,9 @@ export function createWorkspaceMenu({ bot, owners, workspaces, models, gateway, 
         log.warn('left a group', { chatId, by: u.from.id })
         return void await api.leaveChat(chatId).catch(() => {})
       }
-      await setup(chatId, undefined, u.from.id, false).catch(e => log.warn('workspace setup', (e as Error).message))
+      // Asked once, when the bot comes in: a change of its rights later is not a second question
+      const joined = u.old_chat_member.status === 'left' || u.old_chat_member.status === 'kicked'
+      if (joined) await offer(chatId).catch(e => log.warn('workspace offer', (e as Error).message))
     },
     // Telegram hides who an anonymous admin is, so the bot can't tell them from anyone else
     async anonymous(chatId: number, topicId?: number) {
