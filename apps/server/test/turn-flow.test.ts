@@ -1873,27 +1873,38 @@ test("with no cloud there is nothing to offer for a topic whose computer is off,
   on.runs[0].finish()
 })
 
-test('with this computer busy and another one online, Claude is told where heavy work can go and has the tool to send it', async () => {
+test('where heavy work runs is a tool\'s answer, read as it is asked, and nothing of it is in the instructions', async () => {
   const h = start({ elsewhere: true })
   Object.assign(h.gateway.device('pc')!, { cores: 28, memGb: 64, load: { busy: 95, idleSec: 15, at: Date.now() } })
   Object.assign(h.gateway.device('mac')!, { cores: 14, memGb: 48, load: { busy: 2, idleSec: 4000, at: Date.now() } })
   await h.text('run the soak')
   const turn = h.processQueue(KEY)
   await until(() => h.runs.length === 1)
-  assert.match(h.runs[0].o.append, /# Where heavy work runs\nComputers now: PC: 28 cores, 64 GB, 95% busy, the user is at it\. Mac: 14 cores, 48 GB, 2% busy, nobody at it for 67 min\./)
-  const tools = (h.runs[0].o.botServers?.computer as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance._registeredTools
+  // A session that goes on keeps the instructions it began with: figures there would never be seen, or be stale
+  assert.doesNotMatch(h.runs[0].o.append, /Computers now|Where heavy work runs|# This computer/)
+  const tools = (h.runs[0].o.botServers?.computer as unknown as { instance: { _registeredTools: Record<string, { description: string, handler: (a: unknown) => Promise<{ content: { text: string }[] }> }> } }).instance._registeredTools
   assert.ok(tools.sync_branch, 'the way to send a branch there')
+  assert.match(tools.where_to_run.description, /call this before starting long processor-heavy work/)
+  assert.match(tools.where_to_run.description, /sync_branch brings the project and its branch there, then start_agent runs it/)
+  assert.doesNotMatch(tools.where_to_run.description, /\d+% busy|PC|Mac/, 'nothing in it that changes: a description is read once too')
+  assert.match((await tools.where_to_run.handler({})).content[0].text, /^Computers now \(this one first\): PC: 28 cores, 64 GB, 95% busy, the user is at it\. Mac: 14 cores, 48 GB, 2% busy, nobody at it for 67 min\./)
+  // Asked again later in the same turn: as things are then
+  Object.assign(h.gateway.device('pc')!, { load: { busy: 12, idleSec: 900, at: Date.now() } })
+  assert.match((await tools.where_to_run.handler({})).content[0].text, /PC: 28 cores, 64 GB, 12% busy, nobody at it for 15 min/)
   h.runs[0].finish()
   await turn
-
-  // Room here and nothing heavy known: the computers, and no rule
-  const calm = start({ elsewhere: true })
-  Object.assign(calm.gateway.device('pc')!, { cores: 28, load: { busy: 10, at: Date.now() } })
-  await calm.text('hi')
-  const quiet = calm.processQueue(KEY)
-  await until(() => calm.runs.length === 1)
-  assert.doesNotMatch(calm.runs[0].o.append, /Where heavy work runs/)
-  assert.match(calm.runs[0].o.append, /# Computers\nComputers now: PC: 28 cores, 10% busy\. Mac: size not known\./)
-  calm.runs[0].finish()
-  await quiet
 })
+
+test('an agent is told what its computer has when it starts, and no more', async () => {
+  const h = start({ elsewhere: true })
+  Object.assign(h.gateway.device('pc')!, { cores: 28, memGb: 64, load: { busy: 95, idleSec: 15, at: Date.now() } })
+  h.topics.set(KEY, { head: `${GROUP}:1`, workerName: 'Soak' })
+  await h.text('run the soak')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  assert.match(h.runs[0].o.append, /# This computer\nPC: 28 cores, 64 GB\.\n/)
+  assert.doesNotMatch(h.runs[0].o.append, /% busy/)
+  h.runs[0].finish()
+  await turn
+})
+

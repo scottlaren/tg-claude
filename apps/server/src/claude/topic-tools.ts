@@ -129,10 +129,11 @@ export const SUGGEST_COMPUTER = `mcp__${COMPUTER_SERVER}__suggest_computer`
 export const COPY_TO_COMPUTER = `mcp__${COMPUTER_SERVER}__copy_files`
 export const SYNC_BRANCH = `mcp__${COMPUTER_SERVER}__sync_branch`
 export type SyncBranch = { computer: string, branch?: string }
+export const WHERE_TO_RUN = `mcp__${COMPUTER_SERVER}__where_to_run`
 export type CopyFiles = { direction: 'send' | 'fetch', computer: string, path: string, to?: string, project?: string }
 
 // online: where a topic may be offered to go, copyable: where files may be copied to (the cloud is only the first)
-export function createComputerServer(online: string[], suggest: (p: { computer: string, reason: string }) => Promise<string>, copy: (p: CopyFiles) => Promise<string>, copyable = online, sync?: (p: SyncBranch) => Promise<string>) {
+export function createComputerServer(online: string[], suggest: (p: { computer: string, reason: string }) => Promise<string>, copy: (p: CopyFiles) => Promise<string>, copyable = online, sync?: (p: SyncBranch) => Promise<string>, look?: () => Promise<string>) {
   return createSdkMcpServer({
     name: COMPUTER_SERVER,
     tools: [tool(
@@ -154,6 +155,13 @@ export function createComputerServer(online: string[], suggest: (p: { computer: 
         branch: z.string().min(1).max(100).optional().describe('Default: the branch this project is on'),
       },
       async args => ({ content: [{ type: 'text' as const, text: await sync(args) }] }),
+    )] : []), ...(look ? [tool(
+      'where_to_run',
+      // The rule lives here, where a session already at work sees it: a tool that appears is announced to it, its
+      // instructions are not read again
+      `What each of the user's computers has (processors, memory) and how busy it is right now, whether someone is working at it, and what this project's heavy commands cost when they were measured, with an estimate for every other computer. These figures are nowhere else and change by the minute: call this before starting long processor-heavy work (soak runs, sweeps, overnight checks, a full test suite) and when the user asks about the computers or where work is cheaper; never measure them with commands instead. Long work nobody waits for goes where there is room when this computer is busy or the user is working at it: sync_branch brings the project and its branch there, then start_agent runs it. What an agent waits for after each edit stays here, and so does anything that needs this computer's apps or files outside git.`,
+      {},
+      async () => ({ content: [{ type: 'text' as const, text: await look() }] }),
     )] : []), tool(
       'suggest_computer',
       `Offer to work on another of the user's computers. Online now: ${online.join(', ')}. Use it when the user asks, or when the task can't be done on this one (Xcode needs a Mac, an app is only there); not for what this computer can do too. The cloud (named Cloud, if listed) is a Linux container on the server for code only: git, Node, Python, no desktop apps and none of the user's files. Offer it when this topic's own computer is off and the work is code; the user picks or clones the project there. The user answers with buttons: go there with this conversation, start an agent there, or stay. End your turn right after calling it; the next message tells you what was chosen.`,

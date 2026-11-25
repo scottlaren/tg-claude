@@ -38,8 +38,8 @@ import { createAppServer, appToolOf } from '../claude/app-tools.ts'
 import { decide } from '../claude/policy.ts'
 import { resolvedPublicUrl, fetchWebMedia, carriesData } from '../net.ts'
 import { createDeviceServer, isDeviceTool, deviceToolOf } from '../claude/device-tools.ts'
-import { offlineAppend, systemAppend, envChangedNote, ECONOMY, browserBlock, heavyBlock, ownComputerBlock, noProjectAppend, TEAM, teamLinks, scheduleBlock, BROWSER_ASK, agentBlock, HEAD_TASK, HEAD_MESSAGE } from '../claude/prompt.ts'
-import { createSurveyServer, ASK_SURVEY, SURVEY_SERVER, type SurveyInput, createTopicServer, createTopicNameServer, createComputerServer, SUGGEST_PROJECT, TOPIC_SERVER, RENAME_TOPIC, TOPIC_NAME_SERVER, SUGGEST_COMPUTER, COMPUTER_SERVER, COPY_TO_COMPUTER, SYNC_BRANCH, type SyncBranch, createDeleteServer, DELETE_SERVER, DELETE_TOPICS, type DeleteTopics, createDeferServer, DEFER_SERVER, DEFER_TASK, createMessageServer, MESSAGE_SERVER, MESSAGE_TOPIC, type TopicMessage } from '../claude/topic-tools.ts'
+import { offlineAppend, systemAppend, envChangedNote, ECONOMY, browserBlock, computersReport, ownComputerBlock, noProjectAppend, TEAM, teamLinks, scheduleBlock, BROWSER_ASK, agentBlock, HEAD_TASK, HEAD_MESSAGE } from '../claude/prompt.ts'
+import { createSurveyServer, ASK_SURVEY, SURVEY_SERVER, type SurveyInput, createTopicServer, createTopicNameServer, createComputerServer, SUGGEST_PROJECT, TOPIC_SERVER, RENAME_TOPIC, TOPIC_NAME_SERVER, SUGGEST_COMPUTER, COMPUTER_SERVER, COPY_TO_COMPUTER, SYNC_BRANCH, WHERE_TO_RUN, type SyncBranch, createDeleteServer, DELETE_SERVER, DELETE_TOPICS, type DeleteTopics, createDeferServer, DEFER_SERVER, DEFER_TASK, createMessageServer, MESSAGE_SERVER, MESSAGE_TOPIC, type TopicMessage } from '../claude/topic-tools.ts'
 import { answerTarget, canTalkOffline, cloneableRemote, computerNameProblem, deferredPrompt, findComputer, groupProjects, modeCapOf, otherComputers, senderCap, stricterMode, topicMessagePrompt, worktreePath } from './computers.ts'
 import { createProjectCopy, MOVE_SKIP } from './project-copy.ts'
 import { createScheduleServer, SCHEDULE_SERVER, SCHEDULE_TASK } from '../claude/schedule-tools.ts'
@@ -5025,7 +5025,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       // The Chrome the user already gave: starting it opens no page
       if (tool === OPEN_CHROME && mcpServer?.source === 'sdk' && mcpServer.name === BROWSER_OPEN_SERVER) return { behavior: 'allow', updatedInput: input }
       // The same for another computer: only the user's tap switches
-      if (tool === SUGGEST_COMPUTER && mcpServer?.source === 'sdk' && mcpServer.name === COMPUTER_SERVER) return { behavior: 'allow', updatedInput: input }
+      // An offer the user answers, and a look that changes nothing
+      if ((tool === SUGGEST_COMPUTER || tool === WHERE_TO_RUN) && mcpServer?.source === 'sdk' && mcpServer.name === COMPUTER_SERVER) return { behavior: 'allow', updatedInput: input }
       // What it can start at the other end is limited there: see turnMode
       if (tool === MESSAGE_TOPIC && mcpServer?.source === 'sdk' && mcpServer.name === MESSAGE_SERVER) return { behavior: 'allow', updatedInput: input }
       // Only adds to this topic's list, which the chat shows and /stop clears
@@ -6972,7 +6973,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       ...(freshWindow && { [FRESH_SERVER]: createFreshServer({ pct: Math.round(freshWindow.pct), resetsIn: resetTag(freshWindow.resetsAt), label: freshWindow.label }, why => offerFresh(key, prompt, freshWindow, profiles.nameOf(t.profile), why)) }),
       ...(askNewSession && { [NEW_SESSION_SERVER]: createNewSessionServer(Math.round((t.context?.total ?? 0) / 1000), what => newSession.offer(key, t, prompt, images, what)) }),
       ...(!t.head && !plainGroup && { [DELETE_SERVER]: createDeleteServer(p => offerDeleteTopics(key, p)) }),
-      ...(otherOnline.length ? { [COMPUTER_SERVER]: createComputerServer(otherOnline.map(d => d.name), p => suggestComputer(key, p), p => copyFiles(key, topics.get(key), p, abort.signal), otherOnline.filter(d => !isCloud(d.id)).map(d => d.name), dev && project ? p => syncBranch(key, p) : undefined) } : {}),
+      ...(otherOnline.length ? { [COMPUTER_SERVER]: createComputerServer(otherOnline.map(d => d.name), p => suggestComputer(key, p), p => copyFiles(key, topics.get(key), p, abort.signal), otherOnline.filter(d => !isCloud(d.id)).map(d => d.name), dev && project ? p => syncBranch(key, p) : undefined,
+        // Read as it is asked: who is online and how busy changes within a turn
+        dev && project ? async () => computersReport(gateway.device(dev.id) ?? dev, otherComputers(gateway.devices(), dev.id).filter(d => !d.locked), heavy.top(heavyKey(dev.id, project))) : undefined) } : {}),
       ...(!t.head && !plainGroup && { [TEAM_SERVER]: createTeamServer(teamOf(key), models.list().map(m => m.family), [profiles.nameOf(t.profile), ...profiles.list().filter(n => n !== profiles.nameOf(t.profile))]) }),
       [SCHEDULE_SERVER]: createScheduleServer(p => scheduleMenu.propose(key, p)),
       // Telegram takes widgets in private chats only, for now
@@ -7022,7 +7025,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         env: profiles.env(t.profile),
         // §13 mode 1: say it up front instead of letting every change bounce off a denial
         append: (dev && project ? systemAppend(dev, project, dev.id, ctx, Object.keys(cfg.remoteMcp)) : offline ? offlineAppend(Object.keys(cfg.remoteMcp), deviceName(t.deviceId!), t.projectId!) : noProjectAppend(Object.keys(cfg.remoteMcp), gateway.devices().map(d => d.name)))
-          + (!dev || !project ? '' : t.head ? ownComputerBlock(dev, isCloud(dev.id)) : heavyBlock(dev, otherOnline.filter(d => !d.locked), heavy.top(heavyKey(dev.id, project)), true))
+          + (dev && project && t.head ? ownComputerBlock(dev, isCloud(dev.id)) : '')
           + (bound ? browserBlock(chromeAt!.name, bound.deviceId, directFrom ? dev!.name : undefined) : canAskBrowser ? BROWSER_ASK : '') + (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '') + (turnMode(key) === 'read'
           ? '\n\n# Read-only topic\nThe user set this topic to review and planning only: read and analyse, propose changes as text, do not attempt writes, commands or app changes.'
           : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(teamWays(key)))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),

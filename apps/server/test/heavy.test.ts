@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { commandKey, createHeavyStore, isHeavy, wouldTake } from '../src/telegram/heavy.ts'
-import { computerLine, heavyBlock } from '../src/claude/prompt.ts'
+import { computerLine, computersReport, ownComputerBlock } from '../src/claude/prompt.ts'
 
 const PC = { name: 'PC', cores: 28 }
 
@@ -58,22 +58,16 @@ test('a computer in a line: what it has, how busy, and whether someone is at it'
   assert.equal(computerLine({ name: 'Old' }, now), 'Old: size not known')
 })
 
-test('the computers are always said when there is more than one; the rule and the figures when there is a choice to make', () => {
+test('the report of the computers: what each has and how busy it is, and what the heavy commands would take elsewhere', () => {
   const now = 1_000_000
-  const pc = (busy: number) => ({ name: 'PC', cores: 28, memGb: 64, load: { busy, idleSec: 10, at: now } })
+  const pc = { name: 'PC', cores: 28, memGb: 64, load: { busy: 91, idleSec: 10, at: now } }
   const cloud = { name: 'Cloud', cores: 4, memGb: 6, load: { busy: 2, at: now } }
   const heavy = [{ cmd: 'lune run tests', wallSec: 120, coreSec: 2880, device: 'PC', cores: 28 }]
-  assert.equal(heavyBlock(pc(95), [], heavy, true, now), '', 'nowhere else to go')
-  assert.equal(heavyBlock(pc(20), [cloud], [], true, now), '\n\n# Computers\nComputers now: PC: 28 cores, 64 GB, 20% busy, the user is at it. Cloud: 4 cores, 6 GB, 2% busy.', 'nothing heavy known, and room here: what there is, no rule')
-  assert.match(heavyBlock(pc(60), [cloud], [], true, now), /# Where heavy work runs/, 'half busy is busy')
-  const block = heavyBlock(pc(20), [cloud], heavy, true, now)
-  assert.match(block, /# Where heavy work runs/)
-  assert.match(block, /Computers now: PC: 28 cores, 64 GB, 20% busy, the user is at it\. Cloud: 4 cores, 6 GB, 2% busy\./)
-  assert.match(block, /- `lune run tests`: 2 min on PC, using about 24 of its 28 cores; about 12 min on Cloud/)
-  assert.match(block, /sync_branch brings this project and its branch/)
-  const busy = heavyBlock(pc(95), [cloud], [], false, now)
-  assert.match(busy, /95% busy/)
-  assert.doesNotMatch(busy, /Measured in this project|sync_branch/)
+  const said = computersReport(pc, [cloud], heavy, now)
+  assert.match(said, /^Computers now \(this one first\): PC: 28 cores, 64 GB, 91% busy, the user is at it\. Cloud: 4 cores, 6 GB, 2% busy\.\n/)
+  assert.match(said, /- `lune run tests`: 2 min on PC, using about 24 of its 28 cores; about 12 min on Cloud/)
+  assert.match(computersReport(pc, [cloud], [], now), /No heavy command of this project has been measured yet/)
+  assert.match(computersReport(pc, [], [], now), /^Computers now \(this one first\): PC: 28 cores/, 'alone, it still says what it has')
 })
 
 test('a disk is low with a tenth or ten gigabytes left; one that can\'t be read is not called low', async () => {
@@ -86,11 +80,10 @@ test('a disk is low with a tenth or ten gigabytes left; one that can\'t be read 
   assert.equal(diskLow(null), false)
 })
 
-test('an agent is told what its own computer has; in the cloud, that the system\'s tools show the whole server', async () => {
-  const { ownComputerBlock } = await import('../src/claude/prompt.ts')
-  const now = 1_000_000
-  assert.equal(ownComputerBlock({ name: 'Cloud', cores: 4, memGb: 6, load: { busy: 35, at: now } }, true, now),
-    '\n\n# This computer\nCloud: 4 cores, 6 GB, 35% busy. It is a container: nproc and free show the whole server, these figures are what it may use.')
-  assert.equal(ownComputerBlock({ name: 'PC', cores: 28, memGb: 128 }, false, now), '\n\n# This computer\nPC: 28 cores, 128 GB.')
-  assert.equal(ownComputerBlock({ name: 'Old' }, false, now), '', 'an agent too old to say: nothing')
+test('an agent is told what its own computer has, not how busy it is: its instructions are read once', () => {
+  const now = Date.now()
+  assert.equal(ownComputerBlock({ name: 'Cloud', cores: 4, memGb: 6, load: { busy: 35, at: now } }, true),
+    '\n\n# This computer\nCloud: 4 cores, 6 GB. It is a container: nproc and free show the whole server, these figures are what it may use.')
+  assert.equal(ownComputerBlock({ name: 'PC', cores: 28, memGb: 128, load: { busy: 90, idleSec: 3, at: now } }, false), '\n\n# This computer\nPC: 28 cores, 128 GB.')
+  assert.equal(ownComputerBlock({ name: 'Old' }, false), '', 'an agent too old to say: nothing')
 })
