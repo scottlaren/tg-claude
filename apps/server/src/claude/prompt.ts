@@ -155,8 +155,10 @@ export function lightWorktreeLines(project: Pick<Project, 'worktreeSkip' | 'left
 }
 
 // Where heavy work runs: what each computer has and how busy it is, and what this project's heavy commands cost when
-// they were measured. Only when there is a choice to make: another computer online, and either such a command or this
-// computer busy. The figures are rough (heavy.ts); they tell minutes from hours
+// they were measured. The computers are always said when there is more than one: asked "where is it cheaper", Claude
+// had nothing to answer with while this one was under the mark. The rule and the figures come when there is a choice
+// to make: such a command on record, or this computer half busy. The figures are rough (heavy.ts); they tell minutes
+// from hours
 type Capacity = { name: string, cores?: number, memGb?: number, load?: { busy: number, idleSec?: number, at: number } }
 const span = (sec: number) => (sec < 90 ? `${Math.max(1, Math.round(sec))} s` : sec < 7200 ? `${Math.round(sec / 60)} min` : `${Math.round(sec / 360) / 10} h`)
 const FRESH_MS = 10 * 60_000
@@ -172,7 +174,9 @@ export function computerLine(d: Capacity, now = Date.now()) {
 }
 export function heavyBlock(here: Capacity, others: Capacity[], heavy: { cmd: string, wallSec: number, coreSec: number, device: string, cores: number }[], canSend: boolean, now = Date.now()) {
   const busy = here.load && now - here.load.at < FRESH_MS ? here.load.busy : 0
-  if (!others.length || (!heavy.length && busy < 70)) return ''
+  if (!others.length) return ''
+  const computers = `Computers now: ${[here, ...others].map(d => computerLine(d, now)).join('. ')}.`
+  if (!heavy.length && busy < 50) return `\n\n# Computers\n${computers}`
   const sized = others.filter(o => o.cores)
   const lines = heavy.map(h => {
     const used = Math.max(1, Math.round(h.coreSec / Math.max(1, h.wallSec)))
@@ -182,10 +186,17 @@ export function heavyBlock(here: Capacity, others: Capacity[], heavy: { cmd: str
   return `
 
 # Where heavy work runs
-Computers now: ${[here, ...others].map(d => computerLine(d, now)).join('. ')}.${lines.length ? `
+${computers}${lines.length ? `
 Measured in this project (rough: a share of a busy computer, and cores differ):
 ${lines.join('\n')}` : ''}
 Long processor-heavy work nobody waits for (soak runs, sweeps, overnight checks) goes where there is room when this computer is busy or the user is working at it${canSend ? ': sync_branch brings this project and its branch to the other computer through git, then start_agent runs it there' : ''}. What an agent waits for after each edit stays here, and so does anything that needs this computer's apps or files outside git. A computer with fewer cores takes longer, as the figures say: tell the user when you move work and why.`
+}
+
+// An agent's own computer, for its estimates and its report. In the cloud the system's own tools show the whole
+// server: an agent there reported 6 cores and 11 GB of a container given 4 and 6
+export function ownComputerBlock(here: Capacity, container: boolean, now = Date.now()) {
+  if (!here.cores) return ''
+  return `\n\n# This computer\n${computerLine(here, now)}.${container ? ' It is a container: nproc and free show the whole server, these figures are what it may use.' : ''}`
 }
 
 // Environment context (§6): rebuilt every turn, so a device switch shows up immediately

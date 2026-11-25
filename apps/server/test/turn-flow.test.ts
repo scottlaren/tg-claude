@@ -524,6 +524,24 @@ test('after a restart the team board is edited in place, not sent and pinned aga
   await h.stop?.()
 })
 
+test('the team board says which agent works on another computer, and how busy the team\'s computers are', async () => {
+  const h = start({ elsewhere: true, cfg: { boardTickMs: 50 } })
+  Object.assign(h.gateway.device('pc')!, { cores: 28, load: { busy: 60, at: Date.now() } })
+  Object.assign(h.gateway.device('mac')!, { cores: 14, load: { busy: 5, at: Date.now() } })
+  const near = `${GROUP}:9`
+  const far = `${GROUP}:10`
+  h.topics.set(KEY, { deviceId: 'pc', workers: [near, far] })
+  h.topics.set(near, { head: KEY, workerName: 'Tests', deviceId: 'pc' })
+  h.topics.set(far, { head: KEY, workerName: 'Soak', deviceId: 'mac' })
+  const board = () => h.said().find(s => /### 🧭/.test(s))
+  await until(() => !!board(), 3000)
+  const lines = board()!.split('\n')
+  assert.match(lines.find(l => /Soak/.test(l))!, /Soak.*\*\* · \S+ Mac · /, 'the one elsewhere is marked')
+  assert.doesNotMatch(lines.find(l => /Tests/.test(l))!, /PC/, 'the one beside its head is not')
+  assert.match(board()!, /<footer>.*\S+ PC 60% · \S+ Mac 5% · .*<\/footer>/)
+  await h.stop?.()
+})
+
 test('a group the bot is no longer in: its quiet topics and the group itself are cleared, not warned every day', async () => {
   const h = start({ cfg: { topicTtlDays: 7 } })
   h.topics.set(KEY, { usedAt: Date.now() - 6.5 * 86400_000 })
@@ -1868,13 +1886,14 @@ test('with this computer busy and another one online, Claude is told where heavy
   h.runs[0].finish()
   await turn
 
-  // Room here and nothing heavy known: not a word of it
+  // Room here and nothing heavy known: the computers, and no rule
   const calm = start({ elsewhere: true })
   Object.assign(calm.gateway.device('pc')!, { cores: 28, load: { busy: 10, at: Date.now() } })
   await calm.text('hi')
   const quiet = calm.processQueue(KEY)
   await until(() => calm.runs.length === 1)
   assert.doesNotMatch(calm.runs[0].o.append, /Where heavy work runs/)
+  assert.match(calm.runs[0].o.append, /# Computers\nComputers now: PC: 28 cores, 10% busy\. Mac: size not known\./)
   calm.runs[0].finish()
   await quiet
 })

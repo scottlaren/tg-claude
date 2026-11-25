@@ -38,7 +38,7 @@ import { createAppServer, appToolOf } from '../claude/app-tools.ts'
 import { decide } from '../claude/policy.ts'
 import { resolvedPublicUrl, fetchWebMedia, carriesData } from '../net.ts'
 import { createDeviceServer, isDeviceTool, deviceToolOf } from '../claude/device-tools.ts'
-import { offlineAppend, systemAppend, envChangedNote, ECONOMY, browserBlock, heavyBlock, noProjectAppend, TEAM, teamLinks, scheduleBlock, BROWSER_ASK, agentBlock, HEAD_TASK, HEAD_MESSAGE } from '../claude/prompt.ts'
+import { offlineAppend, systemAppend, envChangedNote, ECONOMY, browserBlock, heavyBlock, ownComputerBlock, noProjectAppend, TEAM, teamLinks, scheduleBlock, BROWSER_ASK, agentBlock, HEAD_TASK, HEAD_MESSAGE } from '../claude/prompt.ts'
 import { createSurveyServer, ASK_SURVEY, SURVEY_SERVER, type SurveyInput, createTopicServer, createTopicNameServer, createComputerServer, SUGGEST_PROJECT, TOPIC_SERVER, RENAME_TOPIC, TOPIC_NAME_SERVER, SUGGEST_COMPUTER, COMPUTER_SERVER, COPY_TO_COMPUTER, SYNC_BRANCH, type SyncBranch, createDeleteServer, DELETE_SERVER, DELETE_TOPICS, type DeleteTopics, createDeferServer, DEFER_SERVER, DEFER_TASK, createMessageServer, MESSAGE_SERVER, MESSAGE_TOPIC, type TopicMessage } from '../claude/topic-tools.ts'
 import { answerTarget, canTalkOffline, cloneableRemote, computerNameProblem, deferredPrompt, findComputer, groupProjects, modeCapOf, otherComputers, senderCap, stricterMode, topicMessagePrompt, worktreePath } from './computers.ts'
 import { createProjectCopy, MOVE_SKIP } from './project-copy.ts'
@@ -2784,7 +2784,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       data: `dv:${r.id}`,
     }])
     rows.push([{ text: tr('➕ Connect a computer', '➕ Подключить компьютер'), data: 'pairnew' }])
-    return { md: `### ${tr('💻 Computers', '💻 Компьютеры')}${known.length ? '' : `\n\n${tr('No computers yet.', 'Пока ни одного компьютера.')}`}`, rows }
+    // Where there is room now: the computers that are online, each with what it has and how busy it is
+    const now = gateway.devices().filter(d => capacityText(d)).map(d => `- ${iconOf(d)} **${mdText(d.name)}:** ${capacityText(d)}`)
+    return { md: `### ${tr('💻 Computers', '💻 Компьютеры')}${known.length ? '' : `\n\n${tr('No computers yet.', 'Пока ни одного компьютера.')}`}${now.length ? `\n\n${now.join('\n')}` : ''}`, rows }
   }
   function deviceCard(id: string) {
     const r = registry.list().find(x => x.id === id)
@@ -2800,7 +2802,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const own = registry.profileOf(id)
     const many = profiles.list().length > 1
     return {
-      md: `### ${osIcon({ id, os: d?.os ?? r.os })} ${mdText(d?.name ?? r.name)}\n\n${deviceState(r)}${d?.release ? ` · v${d.release}` : ''}${note}${own ? `\n\n${tr(`Claude profile: **${mdText(own)}**`, `Профиль Claude: **${mdText(own)}**`)}` : ''}\n\nid: \`${id}\``,
+      md: `### ${osIcon({ id, os: d?.os ?? r.os })} ${mdText(d?.name ?? r.name)}\n\n${deviceState(r)}${d?.release ? ` · v${d.release}` : ''}${note}${d && capacityText(d) ? `\n\n${capacityText(d)}` : ''}${own ? `\n\n${tr(`Claude profile: **${mdText(own)}**`, `Профиль Claude: **${mdText(own)}**`)}` : ''}\n\nid: \`${id}\``,
       rows: [
         ...(actions.length ? [actions] : []),
         ...(many || own ? [[{ text: tr(`🧠 Claude profile: ${own ?? 'as the topics'}`, `🧠 Профиль Claude: ${own ?? 'как у топиков'}`), data: `dvp:${id}` }]] : []),
@@ -6187,6 +6189,18 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const now = steps.find(s => s.state === 'now')
     return `${steps.filter(s => s.state === 'done').length}/${steps.length}${now ? ` ${trunc(now.text, 50)}` : ''}`
   }
+  // What a computer said of itself in the last ten minutes: older says nothing of now
+  const freshLoad = (d: { load?: { busy: number, idleSec?: number, at: number } }) => (d.load && Date.now() - d.load.at < 10 * 60_000 ? d.load : undefined)
+  // What it has and how busy it is, for /devices
+  const capacityText = (d: { cores?: number, memGb?: number, load?: { busy: number, idleSec?: number, at: number } }) => {
+    const load = freshLoad(d)
+    return [
+      d.cores && count(d.cores, ['core', 'cores'], ['ядро', 'ядра', 'ядер']),
+      d.memGb && tr(`${d.memGb} GB`, `${d.memGb} ГБ`),
+      load && tr(`${load.busy}% busy`, `загрузка ${load.busy}%`),
+      load?.idleSec !== undefined && load.idleSec < 120 && tr('someone is at it', 'за ним работают'),
+    ].filter(Boolean).join(' · ')
+  }
   function boardEntry(k: string) {
     const t = topics.get(k)
     const l = live.get(k)
@@ -6197,7 +6211,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       : state === 'idle' && reported ? tr(`report at ${clockOf(reported)}`, `отчёт в ${clockOf(reported)}`)
       : word.join(' ')
     const what = [t.workerDoing && trunc(t.workerDoing, 60), state === 'working' && l?.checklist?.length && stepOf(l.checklist)].filter(Boolean).join(' → ')
-    return `> ${icon} **${topicMd(k, t.workerName ?? '?')}** · ${when} · ${mdText(modelLabel(modelOf(t)))}${what ? `  \n> ${mdText(what)}` : ''}`
+    // On another computer than its head: said, so that it is plain whose processors the work takes
+    const away = t.deviceId && t.head && t.deviceId !== topics.get(t.head).deviceId ? ` · ${iconOf({ id: t.deviceId, os: gateway.device(t.deviceId)?.os })} ${mdText(deviceName(t.deviceId))}` : ''
+    return `> ${icon} **${topicMd(k, t.workerName ?? '?')}**${away} · ${when} · ${mdText(modelLabel(modelOf(t)))}${what ? `  \n> ${mdText(what)}` : ''}`
   }
   function boardMarkdown(headKey: string) {
     const team = workersOf(headKey)
@@ -6213,7 +6229,11 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       n('idle') && count(n('idle'), ['idle', 'idle'], ['свободен', 'свободны', 'свободны']),
       waiting.length && count(waiting.length, ['not started', 'not started'], ['ждёт старта', 'ждут старта', 'ждут старта']),
     ].filter(Boolean)
-    return [tr('### 🧭 Team', '### 🧭 Команда'), ...team.map(boardEntry), ...queued, `<footer>${[...sums, tr('updates by itself', 'обновляется само')].join(' · ')}</footer>`].join('\n\n')
+    // How busy the computers of this team are, the head's first
+    const at = [...new Set([headKey, ...team].map(k => topics.get(k).deviceId).filter((id): id is string => !!id))]
+    const loads = at.map(id => gateway.device(id)).filter((d): d is NonNullable<typeof d> => !!d && !!freshLoad(d))
+      .map(d => `${iconOf(d)} ${mdText(d.name)} ${freshLoad(d)!.busy}%`)
+    return [tr('### 🧭 Team', '### 🧭 Команда'), ...team.map(boardEntry), ...queued, `<footer>${[...sums, ...loads, tr('updates by itself', 'обновляется само')].join(' · ')}</footer>`].join('\n\n')
   }
   async function drawBoard(headKey: string) {
     const md = boardMarkdown(headKey)
@@ -7002,7 +7022,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         env: profiles.env(t.profile),
         // §13 mode 1: say it up front instead of letting every change bounce off a denial
         append: (dev && project ? systemAppend(dev, project, dev.id, ctx, Object.keys(cfg.remoteMcp)) : offline ? offlineAppend(Object.keys(cfg.remoteMcp), deviceName(t.deviceId!), t.projectId!) : noProjectAppend(Object.keys(cfg.remoteMcp), gateway.devices().map(d => d.name)))
-          + (dev && project && !t.head ? heavyBlock(dev, otherOnline.filter(d => !d.locked), heavy.top(heavyKey(dev.id, project)), true) : '')
+          + (!dev || !project ? '' : t.head ? ownComputerBlock(dev, isCloud(dev.id)) : heavyBlock(dev, otherOnline.filter(d => !d.locked), heavy.top(heavyKey(dev.id, project)), true))
           + (bound ? browserBlock(chromeAt!.name, bound.deviceId, directFrom ? dev!.name : undefined) : canAskBrowser ? BROWSER_ASK : '') + (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '') + (turnMode(key) === 'read'
           ? '\n\n# Read-only topic\nThe user set this topic to review and planning only: read and analyse, propose changes as text, do not attempt writes, commands or app changes.'
           : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(teamWays(key)))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),
