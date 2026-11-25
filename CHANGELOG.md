@@ -2,6 +2,14 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.18.10
+
+- **The computers reach a head already at work.** What each computer has and how busy it is was written into Claude's instructions, and a conversation that goes on keeps the instructions it began with: a head in the middle of its work never saw them. They are now the answer of a tool, `where_to_run`, read at the moment it is asked, with the rule for moving heavy work in the tool's own description. An agent is told only what its computer has, which doesn't change.
+
+### Русский
+
+- **Данные о компьютерах доходят до хеда, который уже работает.** Что есть у каждого компьютера и насколько он занят, писалось в инструкции Claude, а продолжающийся разговор живёт с теми инструкциями, с которыми начался: хед посреди работы их не видел. Теперь это ответ инструмента `where_to_run`, который читает данные в момент вопроса, а правило о переносе тяжёлой работы стоит в описании самого инструмента. Агенту сообщается только то, что есть у его компьютера и не меняется.
+
 ## 0.18.9
 
 - **Claude always sees the computers.** What each computer has and how busy it is was shown only when this one was 70% busy or a heavy command was on record: asked where work is cheaper, Claude had nothing to answer with. Now the line is always there when more than one computer is online, and the advice to move heavy work starts at half busy.
