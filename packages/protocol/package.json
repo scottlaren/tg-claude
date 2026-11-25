@@ -1,6 +1,6 @@
 {
   "name": "@tgcv/protocol",
-  "version": "0.18.8",
+  "version": "0.18.9",
   "private": true,
   "type": "module",
   "exports": {
