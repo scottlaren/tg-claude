@@ -350,8 +350,34 @@ const Project = z.object({
   branch: z.string().optional(),
   // A folder that only holds worktrees (mfm-wt): a topic may be bound to it, but it isn't offered as a project
   hidden: z.boolean().optional(),
+  // Folders the repository wants its worktrees made without (.worktree-skip): heavy, and rarely needed for the work
+  worktreeSkip: z.array(z.string().max(200)).max(50).optional(),
+  // Folders this worktree was made without
+  leftOut: z.array(z.string().max(200)).max(50).optional(),
 })
 export type Project = z.infer<typeof Project>
+
+// .worktree-skip, in a repository's root: one folder per line, relative to the root, # for a comment. Only plain paths:
+// they end up in git's sparse-checkout patterns, where *, ?, [ and a leading ! mean something, and in a shell command
+const SKIP_PATH = /^[^*?[\]'"%$`!#][^*?[\]'"%$`]*$/
+export function parseWorktreeSkip(text: string): string[] {
+  const paths = text.split(/\r?\n/).map(l => l.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+    .filter(p => p.length <= 200 && SKIP_PATH.test(p) && !p.split('/').some(part => part === '..' || part === '.' || !part))
+  return [...new Set(paths)].slice(0, 50)
+}
+// What 'git sparse-checkout set --no-cone' takes: everything, without those folders
+export const sparsePatterns = (skip: string[]) => ['/*', ...parseWorktreeSkip(skip.join('\n')).map(p => '!/' + p + '/')]
+// Which folders a sparse-checkout file leaves out: a later line can bring one back
+export function sparseLeftOut(text: string): string[] {
+  const out = new Set<string>()
+  for (const line of text.split(/\r?\n/).map(l => l.trim())) {
+    const m = /^(!?)\/(.+?)\/?$/.exec(line)
+    if (!m || m[2] === '*') continue
+    if (m[1]) out.add(m[2])
+    else out.delete(m[2])
+  }
+  return [...out].slice(0, 50)
+}
 
 const Hello = z.object({
   type: z.literal('hello'),

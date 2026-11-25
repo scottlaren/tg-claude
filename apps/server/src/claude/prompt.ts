@@ -1,5 +1,5 @@
 import type { Device } from '../gateway.ts'
-import { CLOUD_DEVICE_ID, type Project, type ProjectContext } from '@tgcv/protocol'
+import { CLOUD_DEVICE_ID, parseWorktreeSkip, sparsePatterns, type Project, type ProjectContext } from '@tgcv/protocol'
 
 const OS_NAME = { windows: 'Windows', macos: 'macOS', linux: 'Linux' } as const
 
@@ -140,6 +140,17 @@ export const ECONOMY = `
 - Read what you need, not whole files: search first, then read_file with offset/limit. Do not re-read a file you just read or edited.
 - Prefer one command that answers the question over several exploratory ones; keep command output small (head, grep, --quiet).`
 
+// A repository that names its heavy folders (.worktree-skip): how a worktree is made without them, and what a
+// worktree made that way lacks. The patterns go through stdin: Git Bash on Windows turns an argument like /* into a path
+export function lightWorktreeLines(project: Pick<Project, 'worktreeSkip' | 'leftOut'>) {
+  const skip = parseWorktreeSkip((project.worktreeSkip ?? []).join('\n'))
+  const leftOut = parseWorktreeSkip((project.leftOut ?? []).join('\n'))
+  return [
+    ...(skip.length ? [`This repository's worktrees are made light, without ${skip.join(', ')} (heavy folders listed in .worktree-skip): git worktree add --no-checkout <folder> -b <branch>, then printf '${sparsePatterns(skip).map(p => `${p}\\n`).join('')}' | git -C <folder> sparse-checkout set --no-cone --stdin && git -C <folder> read-tree -mu HEAD.`] : []),
+    ...(leftOut.length ? [`This checkout is light: it was made without ${leftOut.join(', ')}. Those folders are in git as ever, only not on disk here; when the work needs one: printf '/<folder>/\\n' | git sparse-checkout add --stdin.`] : []),
+  ]
+}
+
 // Environment context (§6): rebuilt every turn, so a device switch shows up immediately
 export function systemAppend(device: Device | undefined, project: Project | undefined, deviceId: string, ctx: ProjectContext | null = null, remote: string[] = []) {
   const where = device && project
@@ -147,6 +158,7 @@ export function systemAppend(device: Device | undefined, project: Project | unde
       `Device: "${device.name}" (id ${device.id}), ${OS_NAME[device.os]}, shell for run_command: ${device.shell}.`,
       `Project: "${project.name}", root on the device: ${posix(project.path)}.`,
       `Git worktrees go in one folder next to the repository, never loose among the projects: the -wt folder that holds its worktrees already or is named after it (mfm-wt, acme-wt), otherwise ${project.name}-wt. For example: git worktree add ../${project.name}-wt/<short> -b <type>/<topic>.`,
+      ...lightWorktreeLines(project),
       ...project.extraRoots.map(r => `Also part of the project (use absolute paths): ${posix(r)}.`),
       ...(project.memoryDir ? [`Your memory for this project (read-only, read topic files on demand): ${posix(project.memoryDir)}.`] : []),
       ...(device.shared?.length ? [`Read-only folders on this computer, open to every project (use absolute paths; list, read and send files from there, nothing there can be changed): ${device.shared.map(posix).join(', ')}. To work on such a file, copy it into the project first with run_command.`] : []),

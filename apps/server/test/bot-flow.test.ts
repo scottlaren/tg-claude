@@ -1765,3 +1765,95 @@ test('limit resets: the claude.ai page opens on a computer through the server, a
   await h.tap(OWNER, 999, 'rst:d:pc')
   assert.equal(h.said().length, before)
 })
+
+test('a repository that names its heavy folders gets its agents\' worktrees without them', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const pc = computer('pc', 'PC', ['repo'])
+  const h = start([pc])
+  const repoPath = join(pc.zone, 'repo')
+  mkdirSync(join(repoPath, 'docs', 'playtest'), { recursive: true })
+  mkdirSync(join(repoPath, 'src'))
+  writeFileSync(join(repoPath, 'docs', 'playtest', 'shot.png'), 'heavy')
+  writeFileSync(join(repoPath, 'src', 'main.lua'), 'code')
+  writeFileSync(join(repoPath, '.worktree-skip'), 'docs/playtest\n')
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: repoPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  git('init', '-q')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'init')
+  const repo = pc.workspace.list(true).find(p => p.name === 'repo')!
+  assert.deepEqual(repo.worktreeSkip, ['docs/playtest'])
+  const made = await h.makeWorktree('pc', repo, 'balance')
+  assert.ok(typeof made !== 'string', String(made))
+  const folder = join(pc.zone, 'repo-wt', 'balance')
+  assert.equal(readFileSync(join(folder, 'src', 'main.lua'), 'utf8'), 'code')
+  assert.ok(!existsSync(join(folder, 'docs', 'playtest')), 'the heavy folder is not on disk')
+  assert.deepEqual(made.project.leftOut, ['docs/playtest'])
+  assert.equal(git('-C', folder, 'status', '--porcelain').trim(), '', 'and git does not take it for deleted')
+
+  // Started again on the branch it left: light as before
+  h.topics.bind(`${OWNER}:5`, 'pc', made.project.id)
+  h.topics.set(`${OWNER}:5`, { worktree: made.worktree })
+  assert.equal(await h.dropWorktree(h.topics.get(`${OWNER}:5`)), null)
+  const again = await h.makeWorktree('pc', pc.workspace.list(true).find(p => p.name === 'repo')!, 'balance')
+  assert.ok(typeof again !== 'string', String(again))
+  assert.ok(existsSync(join(folder, 'src', 'main.lua')) && !existsSync(join(folder, 'docs', 'playtest')))
+})
+
+// A repository with worktrees: one nobody touched since January, one like it with a file not committed, one like it a
+// topic is bound to, and one of today
+async function staleRepo(pc: ReturnType<typeof computer>) {
+  const { execFileSync } = await import('node:child_process')
+  const repoPath = join(pc.zone, 'repo')
+  const long = { GIT_AUTHOR_DATE: '2026-01-05T10:00:00Z', GIT_COMMITTER_DATE: '2026-01-05T10:00:00Z' }
+  const git = (env: Record<string, string>, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: repoPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...env } })
+  git(long, 'init', '-q')
+  git(long, 'commit', '-q', '--allow-empty', '-m', 'init')
+  const folder = (name: string) => join(pc.zone, 'repo-wt', name)
+  for (const name of ['old', 'dirty', 'bound', 'fresh']) {
+    const env = name === 'fresh' ? {} : long
+    git(env, 'worktree', 'add', '-q', '-b', `w/${name}`, folder(name))
+    git(env, '-C', folder(name), 'commit', '-q', '--allow-empty', '-m', 'work')
+  }
+  writeFileSync(join(folder('dirty'), 'notes.txt'), 'not committed')
+  return { git: (...args: string[]) => git({}, ...args), folder }
+}
+
+test('worktrees nobody touched for a week are offered once; their folders go, their branches stay', async () => {
+  const pc = computer('pc', 'PC', ['repo'])
+  const h = start([pc])
+  const { git, folder } = await staleRepo(pc)
+  const of = (name: string) => pc.workspace.list(true).find(p => p.name === name)!
+  h.topics.bind(`${OWNER}:5`, 'pc', of('repo').id)
+  h.topics.bind(`${OWNER}:6`, 'pc', of('bound').id)
+  await h.lookAtWorktrees(`${OWNER}:5`)
+  const card = h.said().find(c => /Untouched for over a week/.test(textOf(c)))!
+  assert.ok(card, 'a card')
+  assert.match(textOf(card), /1 worktree\b/)
+  assert.match(textOf(card), /`old`/)
+  for (const name of ['dirty', 'bound', 'fresh']) assert.ok(!textOf(card).includes(`\`${name}\``), name)
+  assert.match(textOf(card), /branches stay/)
+  const taps = [...textOf(card).matchAll(/data="(wtc:[^"]+)"/g)].map(m => m[1])
+  assert.deepEqual(taps.map(d => d.split(':')[1]), ['del', 'no'], 'never by itself: these are not merged')
+
+  await h.tap(OWNER, OWNER, taps[0], 5)
+  await until(() => !existsSync(folder('old')))
+  await until(() => h.said().some(c => /Folders removed: old\. Their branches stay/.test(textOf(c))))
+  assert.equal(git('rev-parse', '--verify', '-q', 'w/old').trim().length, 40, 'the branch is where it was')
+  for (const name of ['dirty', 'bound', 'fresh']) assert.ok(existsSync(folder(name)), name)
+  assert.equal(readFileSync(join(folder('dirty'), 'notes.txt'), 'utf8'), 'not committed')
+})
+
+test('"Not now" for stale worktrees holds for a week', async () => {
+  const pc = computer('pc', 'PC', ['repo'])
+  const h = start([pc])
+  const { folder } = await staleRepo(pc)
+  h.topics.bind(`${OWNER}:5`, 'pc', pc.workspace.list(true).find(p => p.name === 'repo')!.id)
+  await h.lookAtWorktrees(`${OWNER}:5`)
+  const card = h.said().find(c => /Untouched for over a week/.test(textOf(c)))!
+  const quiet = () => Object.values(JSON.parse(readFileSync(join(h.dir, 'worktree-stale.json'), 'utf8')) as Record<string, number>)[0]
+  assert.ok(quiet() > Date.now() + 23 * 3600_000 && quiet() < Date.now() + 25 * 3600_000, 'a card left unanswered is not repeated for a day')
+  await h.tap(OWNER, OWNER, /data="(wtc:no:[^"]+)"/.exec(textOf(card))![1], 5)
+  assert.ok(quiet() > Date.now() + 6 * 86400_000)
+  assert.ok(h.said().some(c => /ask again in a week/.test(textOf(c))))
+  assert.ok(existsSync(folder('old')))
+})

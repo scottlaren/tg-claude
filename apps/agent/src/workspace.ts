@@ -1,7 +1,7 @@
 import { readdirSync, statSync, existsSync, realpathSync, readFileSync, mkdirSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
-import type { Project } from '@tgcv/protocol'
+import { parseWorktreeSkip, sparseLeftOut, type Project } from '@tgcv/protocol'
 import { isInside, ToolError, writeAtomic } from './paths.ts'
 import { memoryDirOf } from './context.ts'
 
@@ -30,15 +30,33 @@ export function idOf(name: string) {
 
 // In a worktree .git is a file pointing into the main repository. Read directly: this runs for every folder, on every
 // listing, and starting git that many times would be felt
-export function worktreeInfo(path: string): { mainPath: string, branch?: string } | null {
+export function worktreeInfo(path: string): { mainPath: string, gitDir: string, branch?: string } | null {
   try {
     const m = readFileSync(join(path, '.git'), 'utf8').match(/^gitdir:\s*(.+?)[\\/]\.git[\\/]worktrees[\\/]([^\\/\r\n]+)\s*$/m)
     if (!m) return null
-    const head = readFileSync(join(m[1], '.git', 'worktrees', m[2], 'HEAD'), 'utf8').match(/^ref: refs\/heads\/(.+?)\s*$/m)
-    return { mainPath: m[1], branch: head?.[1] }
+    const gitDir = join(m[1], '.git', 'worktrees', m[2])
+    const head = readFileSync(join(gitDir, 'HEAD'), 'utf8').match(/^ref: refs\/heads\/(.+?)\s*$/m)
+    return { mainPath: m[1], gitDir, branch: head?.[1] }
   } catch {
     return null
   }
+}
+
+const readOr = (file: string) => {
+  try {
+    return readFileSync(file, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+// Folders the repository wants its worktrees made without: .worktree-skip in its root
+export const worktreeSkip = (path: string) => parseWorktreeSkip(readOr(join(path, '.worktree-skip')))
+
+// Folders a worktree was made without: its own sparse-checkout, while that is on
+export function worktreeLeftOut(gitDir: string): string[] {
+  if (!/^\s*sparseCheckout\s*=\s*true\s*$/im.test(readOr(join(gitDir, 'config.worktree')))) return []
+  return sparseLeftOut(readOr(join(gitDir, 'info', 'sparse-checkout')))
 }
 
 const samePath = (a: string, b: string) => resolve(a).toLowerCase() === resolve(b).toLowerCase()
@@ -167,12 +185,16 @@ export function createWorkspace({ projects, zones: initialZones, stateFile, self
     return all.map(p => {
       const wt = worktreeInfo(p.path)
       const main = wt && all.find(x => x !== p && samePath(x.path, wt.mainPath))
+      const skip = worktreeSkip(p.path)
+      const leftOut = wt ? worktreeLeftOut(wt.gitDir) : []
       return {
         ...p,
         extraRoots: [...new Set([...p.extraRoots, ...(extra[p.id] ?? [])])].filter(existsSync),
         // One whose main repository isn't among the projects stands on its own
         ...(main && { worktreeOf: main.id, ...(wt.branch && { branch: wt.branch }) }),
         ...(WORKTREES_FOLDER.test(p.name) && !projects.includes(p) && !existsSync(join(p.path, '.git')) && { hidden: true }),
+        ...(skip.length && { worktreeSkip: skip }),
+        ...(leftOut.length && { leftOut }),
       }
     })
   }

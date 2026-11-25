@@ -196,3 +196,39 @@ test('a write cut off half way leaves what was granted whole', () => {
   }
   assert.ok(JSON.parse(readFileSync(stateFile, 'utf8')).extraRoots['new-game'])
 })
+
+test('a repository names the folders its worktrees go without, and a worktree made so says what it lacks', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'tgcv-light-')))
+  const zone = join(base, 'zone')
+  const repo = join(zone, 'repo')
+  mkdirSync(join(repo, 'docs', 'playtest'), { recursive: true })
+  mkdirSync(join(repo, 'src'))
+  writeFileSync(join(repo, 'docs', 'playtest', 'shot.png'), 'heavy')
+  writeFileSync(join(repo, 'src', 'main.lua'), 'code')
+  writeFileSync(join(repo, '.worktree-skip'), '# playtest screenshots\ndocs/playtest\n../outside\n')
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: repo, stdio: 'ignore' })
+  git('init', '-q')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'init')
+  const light = join(zone, 'repo-wt', 'light')
+  git('worktree', 'add', '-q', '--no-checkout', '-b', 'light', light)
+  git('-C', light, 'sparse-checkout', 'set', '--no-cone', '/*', '!/docs/playtest/')
+  git('-C', light, 'read-tree', '-mu', 'HEAD')
+  git('worktree', 'add', '-q', '-b', 'whole', join(zone, 'repo-wt', 'whole'))
+
+  const ws = createWorkspace({ projects: [], zones: [{ path: zone }], stateFile: join(base, 'state.json'), selfDir: join(base, 'agent') })
+  const of = (name: string) => ws.list(true).find(p => p.name === name)!
+  assert.deepEqual(of('repo').worktreeSkip, ['docs/playtest'])
+  assert.equal(of('repo').leftOut, undefined)
+  assert.deepEqual(of('light').leftOut, ['docs/playtest'])
+  assert.ok(!fs.existsSync(join(light, 'docs', 'playtest')), 'not on disk')
+  assert.equal(readFileSync(join(light, 'src', 'main.lua'), 'utf8'), 'code')
+  assert.equal(of('whole').leftOut, undefined)
+  assert.ok(fs.existsSync(join(zone, 'repo-wt', 'whole', 'docs', 'playtest', 'shot.png')))
+
+  // The folder brought back, then the whole of it: nothing is left out any more
+  git('-C', light, 'sparse-checkout', 'disable')
+  assert.equal(of('light').leftOut, undefined)
+  assert.ok(fs.existsSync(join(light, 'docs', 'playtest', 'shot.png')))
+})

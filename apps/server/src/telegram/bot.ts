@@ -11,7 +11,7 @@ import { redact, revealText } from './redact.ts'
 import { pageRow } from './pages.ts'
 import { MUTATING_TOOLS, FILE_CHUNK_BYTES, CLOUD_DEVICE_ID, SEND_FILE_MAX_BYTES, FILE_GET_MAX_BYTES, RESERVED_MCP_NAMES,
   type McpServerInfo, type OpTool, type ContextFile, type ProjectContext, type Project, type GitHubStatus, type GitHubLogin, type GitHubToken, type BrowserProxyState,
-  type SelfUpdateResult, newer, mcpInstallProblem, UPDATE_UNREACHED, type ToolResult, type DeviceTool, DEVICE_SKILL_BYTES, type DeviceSkill, type McpCallResult, SCREEN_LOOKS, type ScreenParams, type ScreenResult } from '@tgcv/protocol'
+  type SelfUpdateResult, newer, mcpInstallProblem, UPDATE_UNREACHED, type ToolResult, type DeviceTool, DEVICE_SKILL_BYTES, type DeviceSkill, type McpCallResult, SCREEN_LOOKS, type ScreenParams, type ScreenResult, sparsePatterns } from '@tgcv/protocol'
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk'
 import { whenOnline, type Gateway, type OpOutcome, type Device } from '../gateway.ts'
 import { notesIn, type Updates, type Release } from '../updates.ts'
@@ -77,7 +77,7 @@ import { createVoiceTasks, isList, SPLIT_MIN_CHARS } from './voice-tasks.ts'
 import { splitTasks } from '../claude/split-tasks.ts'
 import { createLockMenu, createLocks } from './lock-menu.ts'
 import { moveCard, type PortableSettings } from './settings-move.ts'
-import { cleanable, folderName, parseWorktrees, type Worktree } from './worktree-clean.ts'
+import { cleanable, firstNames, folderName, lastMoved, parseWorktrees, type Worktree } from './worktree-clean.ts'
 import { createChecklistServer, livePlan, finalPlan, CHECKLIST_SERVER, SET_CHECKLIST, type ChecklistStep } from '../claude/checklist-tools.ts'
 import { toolResultImage, imageMime } from '../claude/tool-results.ts'
 import { stageUploads } from '../claude/browser-upload.ts'
@@ -1825,8 +1825,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   }
 
   // An agent's own branch: a worktree in the repository's worktrees folder, <project>-wt/<branch>, branch agent/<branch>
-  const git = (deviceId: string, projectId: string, args: string[]) =>
-    gateway.request(deviceId, { projectId, bindingVersion: 0, tool: 'run_command', params: { program: 'git', args, timeoutSec: 120 } })
+  const git = (deviceId: string, projectId: string, args: string[], timeoutSec = 120) =>
+    gateway.request(deviceId, { projectId, bindingVersion: 0, tool: 'run_command', params: { program: 'git', args, timeoutSec } })
+  const gitOut = (out: OpOutcome) => (out.ok ? (out.result as { stdout: string }).stdout : '')
   const gitFailed = (out: OpOutcome) => {
     if (!out.ok) return out.error.message
     const r = out.result as { exitCode: number | null, stderr: string, stdout: string }
@@ -1839,23 +1840,36 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const folder = worktreePath(repo, await gateway.refreshProjects(deviceId), name)
     const branch = `agent/${name}`
     // A new branch from the head's HEAD, or from the agent this one follows; one that exists already (an agent started again) is checked out as is
-    let failed = gitFailed(await git(deviceId, repo.id, ['worktree', 'add', '-b', branch, folder, ...(from ? [from] : [])]))
-    if (failed && /already exists/i.test(failed)) failed = gitFailed(await git(deviceId, repo.id, ['worktree', 'add', folder, branch]))
+    // A repository that names its heavy folders (.worktree-skip) gets the worktree without them
+    const light = sparsePatterns(repo.worktreeSkip ?? [])
+    const bare = light.length > 1 ? ['--no-checkout'] : []
+    let failed = gitFailed(await git(deviceId, repo.id, ['worktree', 'add', ...bare, '-b', branch, folder, ...(from ? [from] : [])]))
+    if (failed && /already exists/i.test(failed)) failed = gitFailed(await git(deviceId, repo.id, ['worktree', 'add', ...bare, folder, branch]))
     if (failed) return `Could not make a worktree for ${branch}: ${failed}`
+    if (bare.length) await fillLight(deviceId, repo.id, folder, light)
     const project = (await gateway.refreshProjects(deviceId)).find(p => p.name === name && p.worktreeOf === (repo.worktreeOf ?? repo.id))
     if (!project) return `The worktree ${folder} was made, but the computer doesn't list it as a project: it is outside the workspace zone, or the computer's agent is older than this server. No agent can be bound to it yet.`
     log.info('worktree made', { device: deviceId, repo: repo.id, folder, branch })
     return { project, worktree: { repo: repo.id, folder, branch } }
   }
+  // Everything but the folders left out. A git that can't do that checks the whole of it out, as ever
+  async function fillLight(deviceId: string, repo: string, folder: string, patterns: string[]) {
+    const failed = gitFailed(await git(deviceId, repo, ['-C', folder, 'sparse-checkout', 'set', '--no-cone', ...patterns]))
+      ?? gitFailed(await git(deviceId, repo, ['-C', folder, 'read-tree', '-mu', 'HEAD'], 600))
+    if (!failed) return
+    log.warn('light worktree', { device: deviceId, folder, failed })
+    await git(deviceId, repo, ['-C', folder, 'sparse-checkout', 'disable'])
+    await git(deviceId, repo, ['-C', folder, 'reset', '--hard', '-q'], 600)
+  }
   // Null when gone; otherwise why the folder stays (uncommitted work is never thrown away)
   // git won't remove a worktree with submodules even when nothing in it has changed. --force does, after the check git
   // skips for them, done here first: anything uncommitted, in the submodules too, and it stays
   async function removeWorktree(deviceId: string, repo: string, folder: string) {
-    const failed = gitFailed(await git(deviceId, repo, ['worktree', 'remove', folder]))
+    const failed = gitFailed(await git(deviceId, repo, ['worktree', 'remove', folder], 600))
     if (!failed || !/submodule/i.test(failed)) return failed
     const status = await git(deviceId, repo, ['-C', folder, 'status', '--porcelain', '--ignore-submodules=none'])
     const changed = gitFailed(status) ?? ((status as { ok: true, result: { stdout: string } }).result.stdout.trim() ? tr('it has uncommitted changes', 'в ней есть незакоммиченные изменения') : null)
-    return changed ?? gitFailed(await git(deviceId, repo, ['worktree', 'remove', '--force', folder]))
+    return changed ?? gitFailed(await git(deviceId, repo, ['worktree', 'remove', '--force', folder], 600))
   }
   const folderRetry = createFolderRetry({
     remove: async (deviceId, repo, folder) => {
@@ -5333,10 +5347,21 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     }
   }
 
-  // --- worktrees of merged branches: a card to remove them, or done by itself once the user says so ---------------
+  // --- worktrees that only take room. Of merged branches: a card to remove them, or done by itself once the user
+  // says so. Ones nobody has touched for a week: a card to remove their folders, the branches stay ---------------
   const worktreeAuto = readJson<Record<string, boolean>>(join(cfg.dataDir, 'worktree-clean.json'), {})
+  // Per repository, until when the stale ones are not offered again: a day after a card, a week after "Not now"
+  const staleQuiet = readJson<Record<string, number>>(join(cfg.dataDir, 'worktree-stale.json'), {})
+  const staleQuietFor = (at: string, ms: number) => {
+    staleQuiet[at] = Date.now() + ms
+    writeJson(join(cfg.dataDir, 'worktree-stale.json'), staleQuiet)
+  }
   const worktreeLooked = new Map<string, number>()
-  const worktreeOffers = new Map<string, { key: string, deviceId: string, repo: string, list: Worktree[] }>()
+  const worktreeOffers = new Map<string, { key: string, deviceId: string, repo: string, list: Worktree[], stale?: boolean }>()
+  const worktreeClean = async (deviceId: string, repo: string, folder: string) => {
+    const status = await git(deviceId, repo, ['-C', folder, 'status', '--porcelain'])
+    return !gitFailed(status) && !gitOut(status).trim()
+  }
   async function lookForMergedWorktrees(key: string) {
     const t = topics.get(key)
     const project = t.deviceId ? gateway.device(t.deviceId)?.projects.find(p => p.id === t.projectId) : undefined
@@ -5350,18 +5375,20 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     // Where agents and topics still work: those stay whatever git says
     const busy = topics.entries().flatMap(([, x]) => (x.worktree && x.deviceId === t.deviceId && x.head && topics.get(x.head).workers?.length ? [x.worktree.folder] : []))
     const merged: Worktree[] = []
-    for (const w of cleanable(parseWorktrees((listed as { ok: true, result: { stdout: string } }).result.stdout), busy)) {
+    const others: Worktree[] = []
+    for (const w of cleanable(parseWorktrees(gitOut(listed)), busy)) {
       const inHead = !gitFailed(await git(t.deviceId, repo, ['merge-base', '--is-ancestor', w.branch!, 'HEAD']))
-      if (!inHead) continue
-      const status = await git(t.deviceId, repo, ['-C', w.folder, 'status', '--porcelain'])
-      if (!gitFailed(status) && !(status as { ok: true, result: { stdout: string } }).result.stdout.trim()) merged.push(w)
+      if (!inHead) others.push(w)
+      else if (await worktreeClean(t.deviceId, repo, w.folder)) merged.push(w)
     }
-    if (!merged.length) return
     const { chatId, topicId } = parseKey(key)
-    if (worktreeAuto[at]) {
-      const gone = await removeWorktrees(t.deviceId, repo, merged)
-      if (gone.length) await api.sendMessage(chatId, tr(`🧹 Folders of merged branches removed: ${gone.map(esc).join(', ')}.`, `🧹 Удалены папки смёрженных веток: ${gone.map(esc).join(', ')}.`), { ...where(topicId), ...HTML, disable_notification: true }).catch(() => {})
-      return
+    // One card at a time: the stale ones wait for the next look when the merged ones are asked about
+    if (!merged.length || worktreeAuto[at]) {
+      if (merged.length) {
+        const gone = await removeWorktrees(t.deviceId, repo, merged)
+        if (gone.length) await api.sendMessage(chatId, tr(`🧹 Folders of merged branches removed: ${gone.map(esc).join(', ')}.`, `🧹 Удалены папки смёрженных веток: ${gone.map(esc).join(', ')}.`), { ...where(topicId), ...HTML, disable_notification: true }).catch(() => {})
+      }
+      return offerStaleWorktrees(key, t.deviceId, repo, others)
     }
     const id = randomBytes(4).toString('hex')
     worktreeOffers.set(id, { key, deviceId: t.deviceId, repo, list: merged })
@@ -5373,18 +5400,58 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       tr(`🧹 **Merged, with nothing uncommitted:** ${merged.map(w => `\`${folderName(w.folder)}\``).join(', ')}. Remove their folders and branches?`, `🧹 **Смёржены, незакоммиченного нет:** ${merged.map(w => `\`${folderName(w.folder)}\``).join(', ')}. Удалить их папки и ветки?`),
     ].join('\n\n'), rows, goKeyboard(rows))
   }
-  // git refuses a folder with changes and a branch that isn't merged: those stay, whatever was decided
-  async function removeWorktrees(deviceId: string, repo: string, list: Worktree[]) {
+  // Not merged, but nobody works there: no topic is bound to the folder, nothing in it is uncommitted, and neither a
+  // commit nor a move of its HEAD happened for a week
+  async function offerStaleWorktrees(key: string, deviceId: string, repo: string, list: Worktree[]) {
+    const at = `${deviceId}:${repo}`
+    if (!list.length || Date.now() < (staleQuiet[at] ?? 0)) return
+    const bound = new Set(topics.entries().flatMap(([, x]) => (x.deviceId === deviceId && x.projectId ? [x.projectId] : [])))
+    // Asked anew: a worktree made by git itself may not be in the list yet
+    const projects = await gateway.refreshProjects(deviceId).catch(() => gateway.device(deviceId)?.projects ?? [])
+    const open = projects.filter(p => bound.has(p.id)).map(p => p.path)
+    const stale: Worktree[] = []
+    for (const w of cleanable(list, open)) {
+      let moved = lastMoved(gitOut(await git(deviceId, repo, ['-C', w.folder, 'log', '-g', '-1', '--date=unix', '--format=%ct %gd', 'HEAD'])))
+      if (!moved) moved = lastMoved(gitOut(await git(deviceId, repo, ['-C', w.folder, 'log', '-1', '--format=%ct', 'HEAD'])))
+      if (!moved || Date.now() - moved < (cfg.worktreeStaleMs ?? 7 * 86400_000)) continue
+      if (await worktreeClean(deviceId, repo, w.folder)) stale.push(w)
+    }
+    if (!stale.length) return
+    let room = 0
+    for (const w of stale) room += await trackedBytes(deviceId, repo, w.folder)
+    staleQuietFor(at, 86400_000)
+    const id = randomBytes(4).toString('hex')
+    worktreeOffers.set(id, { key, deviceId, repo, list: stale, stale: true })
+    const names = firstNames(stale.map(w => `\`${folderName(w.folder)}\``), n => tr(`and ${n} more`, `и ещё ${n}`))
+    const size = room ? tr(`, about ${bytes(room)}`, `, около ${bytes(room)}`) : ''
+    const rows: RichButton[][] = [[{ text: tr('🧹 Remove the folders', '🧹 Удалить папки'), data: `wtc:del:${id}` }, { text: tr('Not now', 'Не сейчас'), data: `wtc:no:${id}` }]]
+    const { chatId, topicId } = parseKey(key)
+    await sendChoice(chatId, topicId, tr(
+      `🧹 **Untouched for over a week, nothing uncommitted:** ${count(stale.length, ['worktree', 'worktrees'], ['рабочая копия', 'рабочие копии', 'рабочих копий'])}${size} (${names}). Remove their folders? The branches stay: \`git worktree add\` brings any of them back.`,
+      `🧹 **Не трогали больше недели, незакоммиченного нет:** ${count(stale.length, ['worktree', 'worktrees'], ['рабочая копия', 'рабочие копии', 'рабочих копий'])}${size} (${names}). Удалить их папки? Ветки останутся: \`git worktree add\` вернёт любую.`,
+    ), rows, goKeyboard(rows))
+  }
+  // What a worktree's files weigh, by git's own list of them: quick, and near enough to what the folder takes.
+  // Needs a shell with awk; 0 when there is none
+  async function trackedBytes(deviceId: string, repo: string, folder: string) {
+    if (!/(^|[\\/])(ba|z|da)?sh(\.exe)?$/i.test(gateway.device(deviceId)?.shell ?? '')) return 0
+    const command = `git -C '${folder.replace(/'/g, `'\\''`)}' ls-tree -r -l HEAD | awk '{s+=$4} END {print s+0}'`
+    const out = await gateway.request(deviceId, { projectId: repo, bindingVersion: 0, tool: 'run_command', params: { command, timeoutSec: 60 } })
+    return gitFailed(out) ? 0 : Number(gitOut(out).trim()) || 0
+  }
+  // git refuses a folder with changes and a branch that isn't merged: those stay, whatever was decided.
+  // branches: false for the stale ones, which lose the folder only
+  async function removeWorktrees(deviceId: string, repo: string, list: Worktree[], branches = true) {
     const gone: string[] = []
     for (const w of list) {
       const failed = await removeWorktree(deviceId, repo, w.folder)
       if (failed && !isBusyFolder(failed)) continue
       if (failed) folderRetry.later(deviceId, repo, w.folder)
-      await git(deviceId, repo, ['branch', '-d', w.branch!])
+      if (branches) await git(deviceId, repo, ['branch', '-d', w.branch!])
       gone.push(folderName(w.folder))
     }
     if (gone.length) {
-      log.info('merged worktrees removed', { device: deviceId, repo, gone })
+      log.info(branches ? 'merged worktrees removed' : 'stale worktrees removed', { device: deviceId, repo, gone })
       await gateway.refreshProjects(deviceId).catch(() => {})
     }
     return gone
@@ -5396,7 +5463,22 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const msg = ctx.callbackQuery.message
     if (ctx.match[1] === 'no') {
       await ctx.answerCallbackQuery()
-      if (msg) await editRich(ctx.chat!.id, msg.message_id, tr('🧹 Left as they are.', '🧹 Оставлены как есть.'))
+      if (o.stale) staleQuietFor(`${o.deviceId}:${o.repo}`, 7 * 86400_000)
+      if (msg) await editRich(ctx.chat!.id, msg.message_id, o.stale ? tr('🧹 Left as they are. I will ask again in a week.', '🧹 Оставлены как есть. Спрошу снова через неделю.') : tr('🧹 Left as they are.', '🧹 Оставлены как есть.'))
+      return
+    }
+    if (o.stale) {
+      // Dozens of folders of gigabytes each take minutes: the card says so, and the answer comes when they are gone
+      await ctx.answerCallbackQuery(tr('Removing…', 'Удаляю…'))
+      if (msg) await editRich(ctx.chat!.id, msg.message_id, tr(`🧹 Removing ${count(o.list.length, ['folder', 'folders'], ['папку', 'папки', 'папок'])}…`, `🧹 Удаляю ${count(o.list.length, ['folder', 'folders'], ['папку', 'папки', 'папок'])}…`)).catch(() => {})
+      background((async () => {
+        const gone = await removeWorktrees(o.deviceId, o.repo, o.list, false)
+        const kept = o.list.map(w => folderName(w.folder)).filter(n => !gone.includes(n))
+        if (msg) await editRich(ctx.chat!.id, msg.message_id, [
+          gone.length ? tr(`🧹 Folders removed: ${gone.join(', ')}. Their branches stay.`, `🧹 Папки удалены: ${gone.join(', ')}. Ветки остались.`) : '',
+          kept.length ? tr(`Kept, as git refused: ${kept.join(', ')}.`, `Остались, git отказался: ${kept.join(', ')}.`) : '',
+        ].filter(Boolean).join(' '))
+      })())
       return
     }
     if (ctx.match[1] === 'auto') {
@@ -7695,6 +7777,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     },
     makeWorktree,
     dropWorktree,
+    lookAtWorktrees: lookForMergedWorktrees,
     schedules,
     scheduleTick: () => scheduleMenu.tick(),
     checkExpiry,

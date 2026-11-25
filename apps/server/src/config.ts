@@ -44,6 +44,8 @@ export type ServerConfig = {
   limitGraceMs?: number
   // How often a repository is looked at for merged worktrees
   worktreeCheckMs?: number
+  // After how long a worktree nobody touches is offered for removal
+  worktreeStaleMs?: number
   limitTickMs?: number
   // The night shift: how often it is looked at, after how long a quiet head is woken, and for tests a harmless stand-in
   // for putting a computer to sleep
