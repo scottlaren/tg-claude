@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
-import { awakeCommand, awakeDefault, createKeepAwake, watchWakes } from '../src/keep-awake.ts'
+import { awakeCommand, awakeDefault, createKeepAwake, holdsAfterWake, watchWakes } from '../src/keep-awake.ts'
 
 // A pretend process: nothing on this computer is asked to stay awake
 function stand(o: { platform?: NodeJS.Platform, on?: boolean, graceMs?: number } = {}) {
@@ -102,4 +102,29 @@ test('a jump of the clock is a sleep; time going as it should is not', async () 
   await sleep(20)
   assert.equal(wakes, 1)
   stop()
+})
+
+test('asleep with the screen off: nothing is asked of the system whatever runs, and asked again once awake', () => {
+  const { awake, started, live } = stand()
+  awake.hold()
+  assert.equal(started.length, 1)
+  awake.rest(true)
+  assert.equal(live[0].killed, true, 'the Mac is let go to sleep')
+  awake.hold()
+  awake.woke(60)
+  assert.equal(started.length, 1, 'nothing new while it rests')
+  awake.rest(false)
+  assert.equal(started.length, 2, 'something still runs: held again')
+  awake.release()
+  awake.release()
+  awake.rest(true)
+  awake.rest(false)
+  assert.equal(started.length, 2, 'nothing runs: nothing to hold')
+  awake.close()
+})
+
+test('only Windows is held up after a wake', () => {
+  assert.equal(holdsAfterWake('win32'), true)
+  assert.equal(holdsAfterWake('darwin'), false)
+  assert.equal(holdsAfterWake('linux'), false)
 })

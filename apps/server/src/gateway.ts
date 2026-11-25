@@ -12,7 +12,18 @@ import type { Log } from './log.ts'
 import type { DeviceRegistry, Pairing } from './devices.ts'
 import { tr } from './i18n.ts'
 
-const HEARTBEAT_MS = 15_000 // a dead device is noticed within two intervals (§8.2: ≤ 60 s)
+const HEARTBEAT_MS = 15_000
+// A laptop asleep on battery wakes every few seconds, and now and then sleeps a second longer than one interval: it
+// was cut off 266 times in a day for that. One ping without an answer is not a dead link, two in a row are: a dead
+// device is noticed within three intervals (§8.2: ≤ 60 s)
+const MISSED_PINGS = 2
+// One beat for one computer: ping it again, or give it up
+export function heartbeatStep(c: { alive: boolean, missed: number }): 'ping' | 'drop' {
+  if (c.alive) c.missed = 0
+  else if (++c.missed >= MISSED_PINGS) return 'drop'
+  c.alive = false
+  return 'ping'
+}
 // Long enough for a hello on a link busy with everything that starts with Windows: at 10 s a computer just switched on
 // was cut off over and over, and each time the cut came as it was announced online
 const HELLO_TIMEOUT_MS = 60_000
@@ -62,7 +73,8 @@ export type OpSpec = {
   sessionId?: string
 }
 
-type Conn = Device & { ws: WebSocket, alive: boolean }
+// lost: why the server itself ended the link, for the log
+type Conn = Device & { ws: WebSocket, alive: boolean, missed: number, lost?: string }
 type Pending = {
   deviceId: string, tool: OpTool, projectId: string, sentAt: number, accepted: boolean, cancelling?: boolean, timer?: NodeJS.Timeout, resolve: (o: OpOutcome) => void,
   // run_command's own time limit
@@ -323,7 +335,7 @@ export function createGateway({ port, host, registry, pairing, log, cancelWaitMs
         devices.get(m.deviceId)?.ws.terminate()
         conn = {
           id: m.deviceId, name: registry.nameOf(m.deviceId) ?? m.deviceName, os: m.os, shell: m.shell, projects: m.projects, mcp: m.mcp, apps: m.apps,
-          connectedAt: Date.now(), version: m.version, release: m.release, locked: m.locked, keepAwake: m.keepAwake, screen: m.screen, shared: m.shared, ws, alive: true,
+          connectedAt: Date.now(), version: m.version, release: m.release, locked: m.locked, keepAwake: m.keepAwake, screen: m.screen, shared: m.shared, ws, alive: true, missed: 0,
         }
         // The cloud goes by its name in the bot's language, whatever its agent calls itself
         if (conn.id === CLOUD_DEVICE_ID) Object.defineProperty(conn, 'name', { get: () => tr('Cloud', 'Облако'), enumerable: true })
@@ -349,7 +361,7 @@ export function createGateway({ port, host, registry, pairing, log, cancelWaitMs
       if (conn) conn.alive = true
     })
 
-    ws.on('close', () => {
+    ws.on('close', code => {
       clearTimeout(helloTimer)
       // Tunnelled connections live only as long as the link they came through
       for (const p of streams.values()) p.drop()
@@ -359,18 +371,19 @@ export function createGateway({ port, host, registry, pairing, log, cancelWaitMs
       // What was in flight goes on over there: never resent blindly (§14), the computer is asked when it is back
       linkLost(conn.id)
       registry.touch(conn.id, { lastSeen: Date.now() })
-      log.info('device offline', { id: conn.id })
+      // Who ended it and after how long: a computer that drops many times a day is told apart from one that sleeps
+      log.info('device offline', { id: conn.id, why: conn.lost ?? `closed from its side (${code})`, upSec: Math.round((Date.now() - conn.connectedAt) / 1000) })
       events.emit('offline', conn.id)
     })
   })
 
   const heartbeat = setInterval(() => {
     for (const c of devices.values()) {
-      if (!c.alive) {
+      if (heartbeatStep(c) === 'drop') {
+        c.lost = `no answer to ${MISSED_PINGS} pings, ${MISSED_PINGS * HEARTBEAT_MS / 1000} s`
         c.ws.terminate()
         continue
       }
-      c.alive = false
       c.ws.ping()
     }
   }, HEARTBEAT_MS)

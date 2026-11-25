@@ -94,3 +94,34 @@ test('the hello is small: the apps\' tools go after the welcome', async () => {
     wss.close()
   }
 })
+
+test('resting, it leaves the link and doesn\'t try for one; awake again, it is back at once', async () => {
+  let hellos = 0
+  let open = 0
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' })
+  await new Promise(r => wss.once('listening', r))
+  wss.on('connection', ws => {
+    open++
+    ws.on('close', () => open--)
+    ws.on('message', raw => {
+      if (JSON.parse(String(raw)).type !== 'hello') return
+      hellos++
+      ws.send(JSON.stringify({ type: 'welcome', protocol: 0 }))
+    })
+  })
+  const { port } = wss.address() as { port: number }
+  const client = startClient(cfg(port), {} as never, () => {}, undefined, undefined, undefined, undefined, {})
+  assert.ok(await until(() => hellos === 1 && client.linkedFor() > 0), 'connected')
+  client.rest(true)
+  assert.ok(await until(() => open === 0), 'the server sees it go')
+  // Longer than the first retry would take
+  await new Promise(r => setTimeout(r, 1500))
+  assert.equal(hellos, 1, 'no way back while it rests')
+  client.rest(false)
+  assert.ok(await until(() => hellos === 2 && open === 1), 'back')
+  client.rest(false)
+  await new Promise(r => setTimeout(r, 100))
+  assert.equal(hellos, 2, 'said twice, done once')
+  client.stop()
+  wss.close()
+})

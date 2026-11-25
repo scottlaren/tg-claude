@@ -1172,7 +1172,16 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     if (!t.deviceId) return ctx.reply(tr('Choose a computer and project first: /project', 'Сначала выбери компьютер и проект: /project'), where(topicId))
     const bound = browsers.get(t.deviceId)
     const account = chromeAccount(t.deviceId)
-    // Signed in to another account than this topic's: Claude reaches it through an errand on that account
+    // Signed in to another account than this topic's. Another computer's Chrome may be on this topic's account: the
+    // session works in that one itself. Otherwise Claude reaches this computer's through an errand on its account
+    const direct = bound && account && account !== profiles.nameOf(t.profile) ? chromeOnAccount(t.deviceId, profiles.nameOf(t.profile)) : undefined
+    if (direct) {
+      const there = `${browserBold(browsers.get(direct.id)!)} ${tr('on', 'на')} ${esc(direct.name)}`
+      const why = tr(`Chrome on ${esc(deviceName(t.deviceId))} is signed in to <b>${esc(account!)}</b>, this topic runs on <b>${esc(profiles.nameOf(t.profile))}</b>, and so does that Chrome.`, `Chrome на ${esc(deviceName(t.deviceId))} вошёл в <b>${esc(account!)}</b>, этот топик на <b>${esc(profiles.nameOf(t.profile))}</b>, как и тот Chrome.`)
+      if (t.browser) return ctx.reply(tr(`🌐 Browser on: ${there}. ${why}`, `🌐 Браузер включён: ${there}. ${why}`), { ...where(topicId), ...HTML, reply_markup: new InlineKeyboard().text(tr('Turn off in this topic', 'Выключить в топике'), 'brx') })
+      topics.set(key, { browser: true, browserAuto: false })
+      return ctx.reply(tr(`🌐 Browser on: ${there}. ${why} Each request to Claude costs about 3k more tokens; turn it off with /browser.`, `🌐 Браузер включён: ${there}. ${why} Каждый запрос к Claude дороже примерно на 3 тыс. токенов, выключить — /browser.`), { ...where(topicId), ...HTML })
+    }
     if (bound && account && account !== profiles.nameOf(t.profile)) {
       return ctx.reply(tr(`🌐 ${browserBold(bound)} on ${esc(deviceName(t.deviceId))} is signed in to the profile <b>${esc(account)}</b>, and this topic runs on <b>${esc(profiles.nameOf(t.profile))}</b>. Nothing to turn on: asked for Chrome, Claude hands the task to a short session on ${esc(account)}, which works in it.`, `🌐 ${browserBold(bound)} на ${esc(deviceName(t.deviceId))} вошёл в профиль <b>${esc(account)}</b>, а этот топик на <b>${esc(profiles.nameOf(t.profile))}</b>. Включать ничего не нужно: попросишь Chrome — Claude поручит задачу короткой сессии на ${esc(account)}, и она сделает её в этом браузере.`), { ...where(topicId), ...HTML })
     }
@@ -1618,7 +1627,16 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
   }
   // Computers other than this one whose Chrome is signed in to an account with room: where browser work can go when a
   // topic's own account is spent. A Chrome works only through the account it is signed in to
-  const chromesWithRoom = (deviceId?: string) => gateway.devices().filter(d => d.id !== deviceId && !isCloud(d.id) && !d.locked && !!browsers.get(d.id) && !!chromeAccount(d.id) && !limitSpent(profiles.nameOf(chromeAccount(d.id))))
+  // One that dropped its link a moment ago counts: a laptop does that for a few seconds many times a day, and the errand waits for it
+  const JUST_HERE_MS = 2 * 60_000
+  const hereOrJustHere = (r: { id: string, lastSeen?: number }) => {
+    const d = gateway.device(r.id)
+    return d ? !d.locked : Date.now() - (r.lastSeen ?? 0) < JUST_HERE_MS
+  }
+  const chromesWithRoom = (deviceId?: string) => registry.list().filter(r => r.id !== deviceId && !isCloud(r.id) && hereOrJustHere(r) && !!browsers.get(r.id) && !!chromeAccount(r.id) && !limitSpent(profiles.nameOf(chromeAccount(r.id))))
+  // Another computer whose Chrome is signed in to this very account: a session on that account sees that Chrome itself
+  const chromeOnAccount = (deviceId: string, profile: string) =>
+    registry.list().find(r => r.id !== deviceId && !isCloud(r.id) && !!browsers.get(r.id) && chromeAccount(r.id) === profile && hereOrJustHere(r))
 
   // Another signed-in profile with room left, the emptiest first: for a topic that ran into a limit. One already
   // spent is skipped until its reset, so two accounts never pass a task back and forth
@@ -6619,7 +6637,13 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const ownChrome = dev && !dev.locked ? browsers.get(dev.id) : undefined
     const ownAccount = dev ? chromeAccount(dev.id) : undefined
     const chromeElsewhere = !!ownChrome && !!ownAccount && ownAccount !== profiles.nameOf(t.profile)
-    const bound = t.browser && !chromeElsewhere ? ownChrome : undefined
+    // With that Chrome out of reach, another computer's may be within it: one signed in to this topic's own account is
+    // seen by this session. It is worked in directly, step by step, where an errand would start anew for every request
+    // and retell what it saw. So it is after a move at the limit: the topic is on the account of the other computer
+    const directFrom = t.browser && chromeElsewhere ? chromeOnAccount(dev!.id, profiles.nameOf(t.profile)) : undefined
+    // The computer this session's Chrome is on: the topic's own, or that one
+    const chromeAt = directFrom ? { id: directFrom.id, name: directFrom.name } : dev ? { id: dev.id, name: dev.name } : undefined
+    const bound = !t.browser ? undefined : directFrom ? browsers.get(directFrom.id) : chromeElsewhere ? undefined : ownChrome
     const browserLock = lockOf(profiles.nameOf(t.profile))
     const where_ = { device: dev?.name ?? '—', project: project?.name ?? tr('no project', 'без проекта'), icon: dev && iconOf(dev) }
     let picked = false
@@ -6633,12 +6657,18 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const chromeVerdict = async (tool: string, input: Record<string, unknown>, hookSignal: AbortSignal): Promise<true | string> => {
       const signal = AbortSignal.any([hookSignal, abort.signal])
       if (signal.aborted) return 'Stopped by the user.'
-      const c = classifyChrome(tool, input, { bound: bound!, device: dev!.name, selected: picked })
+      const c = classifyChrome(tool, input, { bound: bound!, device: chromeAt!.name, selected: picked })
       if (typeof c === 'object') {
         log.info('chrome', { key, tool, verdict: 'denied', reason: c.deny.slice(0, 80) })
         return c.deny
       }
       if (c === 'select') {
+        // Another computer's Chrome: that computer has to be here, and one that just dropped its link is waited for
+        if (directFrom) {
+          const there = await errandDevice(chromeAt!)
+          if (!there || there.locked) return `Chrome on ${chromeAt!.name} can't be used now: that computer is ${there ? 'locked' : awayFor(chromeAt!)}. Say so in your answer; no other Chrome is within this session's reach.`
+          log.info('chrome', { key, direct: chromeAt!.id })
+        }
         if (browserLock.busyFor(bound!.deviceId) && !toldWait) {
           toldWait = true
           api.sendMessage(chatId, tr('🌐 A task in another topic is using the browser; waiting for it to finish.', '🌐 Браузером сейчас пользуется задача в другом топике, жду, пока она закончится.'), where(topicId)).catch(() => {})
@@ -6648,7 +6678,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         } catch {
           return 'Stopped by the user.'
         }
-        return route ??= chromeRoute(chatId, topicId, dev!, signal, !!shiftOf(key))
+        return route ??= chromeRoute(chatId, topicId, chromeAt!, signal, !!shiftOf(key))
       }
       if (c !== 'act') return true
       // Navigation, clicks, typing, scripts: the topic's mode decides, like any other change (§13)
@@ -6666,7 +6696,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       // The extension renames browsers as they come and go: what /browser shows follows it
       const now = list.find(b => b.deviceId === bound.deviceId)
       if (now && now.name !== bound.name) {
-        browsers.bind(dev!.id, { ...now, profile: bound.profile ?? profiles.nameOf(t.profile) })
+        browsers.bind(chromeAt!.id, { ...now, profile: bound.profile ?? profiles.nameOf(t.profile) })
         bound.name = now.name
       }
       // The list says one is in use and nothing more is needed: for this topic, picking it is still the first step
@@ -6675,10 +6705,25 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
 
     const powerComputers = gateway.devices().filter(d => !isCloud(d.id) && !d.locked).map(d => d.name)
     // Chrome on another computer: a short session on that computer's profile does the task there and answers
-    const errandComputers = dev && !isCloud(dev.id) ? gateway.devices().filter(d => (d.id === dev.id ? chromeElsewhere : !isCloud(d.id) && !d.locked && !!browsers.get(d.id))) : []
+    // Every computer with a Chrome chosen, online or not: who is here is looked at when Chrome is asked for, not now. A
+    // computer away for the seconds in which a turn starts used to be left out of the whole turn
+    const errandComputers = dev && !isCloud(dev.id) ? registry.list().filter(r => (r.id === dev.id ? chromeElsewhere : !isCloud(r.id) && !!browsers.get(r.id) && r.id !== directFrom?.id)).map(r => ({ id: r.id, name: r.name })) : []
+    // The computer, once it is online: one that dropped its link a moment ago is waited for, it is usually back in seconds
+    // When it was last seen is read now: a computer here as the turn began can drop its link in the middle of it
+    const seenOf = (id: string) => registry.list().find(r => r.id === id)?.lastSeen
+    async function errandDevice(c: (typeof errandComputers)[number]) {
+      const wait = hereOrJustHere({ id: c.id, lastSeen: seenOf(c.id) }) ? cfg.errandBackMs ?? 30_000 : 0
+      for (const end = Date.now() + wait; !gateway.device(c.id) && Date.now() < end && !abort.signal.aborted;) await new Promise(r => setTimeout(r, Math.min(500, Math.max(10, wait / 10))))
+      return gateway.device(c.id)
+    }
+    const awayFor = (c: (typeof errandComputers)[number]) => {
+      const seen = seenOf(c.id)
+      const min = Math.round((Date.now() - (seen ?? 0)) / 60_000)
+      return seen ? `offline, last seen ${min < 1 ? 'less than a minute' : min < 120 ? `${min} min` : `${Math.round(min / 60)} h`} ago` : 'offline'
+    }
     // One computer's Chrome for an errand. limit: its account has spent its limit. skip: it can't take the errand at all
     type ErrandTry = ErrandResult | { limit: string } | { skip: string }
-    async function errandOn(target: (typeof errandComputers)[number], p: Errand, instead?: string): Promise<ErrandTry> {
+    async function errandOn(target: NonNullable<ReturnType<typeof gateway.device>>, p: Errand, instead?: string): Promise<ErrandTry> {
       const b = browsers.get(target.id)!
       const profile = profiles.nameOf(chromeAccount(target.id) ?? t.profile)
       const atLimit = () => {
@@ -6758,22 +6803,35 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     // browser does it, and the answer says where it was done
     async function browserErrand(p: Errand): Promise<ErrandResult> {
       const asked = errandComputers.find(d => d.name === p.computer)
-      if (!asked || !gateway.device(asked.id) || !browsers.get(asked.id)) return `${p.computer} is offline or has no Chrome chosen: the user picks one with /browser in a topic on it.`
-      const others = errandComputers.filter(d => d.id !== asked.id && gateway.device(d.id) && browsers.get(d.id))
+      if (!asked || !browsers.get(asked.id)) return `${p.computer} has no Chrome chosen: the user picks one with /browser in a topic on it.`
+      const others = errandComputers.filter(d => d.id !== asked.id && browsers.get(d.id))
       const spent: string[] = []
-      for (const target of [asked, ...others]) {
+      // The others that could not take it, each with its reason: the answer names them, so nobody is left to guess why
+      // a Chrome that was there wasn't used
+      const passed: string[] = []
+      for (const c of [asked, ...others]) {
+        const target = await errandDevice(c)
+        if (!target || target.locked) {
+          const why = `${c.name}: ${target ? 'locked at the computer' : awayFor(c)}`
+          if (c === asked) return `${why}. Nothing was done.`
+          passed.push(why)
+          continue
+        }
         const r = await errandOn(target, p, spent.length ? `Done here instead of ${spent.join(', ')}, at the limit of its Claude account: the sign-ins in this Chrome may differ` : undefined)
         if (typeof r === 'object' && 'limit' in r) {
           spent.push(r.limit)
           continue
         }
         if (typeof r === 'object' && 'skip' in r) {
-          if (target === asked) return r.skip
+          if (c === asked) return r.skip
+          passed.push(`${c.name}: ${r.skip}`)
           continue
         }
         return r
       }
-      return `Nothing was done: the Claude account of every Chrome that could do it has spent its limit: ${spent.join('; ')}. A Chrome works only through the account it is signed in to, so none can before a reset. Don't try a browser again in this turn.`
+      log.info('browser errand not done', { key, spent, passed })
+      if (!passed.length) return `Nothing was done: the Claude account of every Chrome that could do it has spent its limit: ${spent.join('; ')}. A Chrome works only through the account it is signed in to, so none can before a reset. Don't try a browser again in this turn.`
+      return `Nothing was done. At the limit of its Claude account: ${spent.join('; ')}. Could not take it instead: ${passed.join('; ')}. A Chrome works only through the account it is signed in to. Name in your answer each computer that could not take it and why: the user can bring it back.`
     }
 
     const canAskBrowser = !!dev && !isCloud(dev.id) && !t.browser && !chromeElsewhere
@@ -6810,7 +6868,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       ...(canAskBrowser && { [BROWSER_ASK_SERVER]: createBrowserAskServer(p => askForBrowser(key, p)) }),
       ...(screenOn ? { [SCREEN_SERVER]: createScreenServer(dev!.name, turnMode(key) === 'read', dev!.os === 'macos', useScreen) } : screenable ? { [SCREEN_ACCESS_SERVER]: createScreenAskServer(dev!.name, p => askForScreen(key, p)) } : {}),
       ...decisionsMenu.servers(chatId, topicId),
-      ...(bound && { [BROWSER_OPEN_SERVER]: createBrowserOpenServer(() => openChrome(dev!.id)) }),
+      ...(bound && { [BROWSER_OPEN_SERVER]: createBrowserOpenServer(() => openChrome(chromeAt!.id)) }),
       ...(errandComputers.length && turnMode(key) !== 'read' && { [ERRAND_SERVER]: createErrandServer(errandComputers.map(d => d.name), browserErrand) }),
     }
 
@@ -6851,7 +6909,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         env: profiles.env(t.profile),
         // §13 mode 1: say it up front instead of letting every change bounce off a denial
         append: (dev && project ? systemAppend(dev, project, dev.id, ctx, Object.keys(cfg.remoteMcp)) : offline ? offlineAppend(Object.keys(cfg.remoteMcp), deviceName(t.deviceId!), t.projectId!) : noProjectAppend(Object.keys(cfg.remoteMcp), gateway.devices().map(d => d.name)))
-          + (bound ? browserBlock(dev!.name, bound.deviceId) : canAskBrowser ? BROWSER_ASK : '') + (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '') + (turnMode(key) === 'read'
+          + (bound ? browserBlock(chromeAt!.name, bound.deviceId, directFrom ? dev!.name : undefined) : canAskBrowser ? BROWSER_ASK : '') + (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '') + (turnMode(key) === 'read'
           ? '\n\n# Read-only topic\nThe user set this topic to review and planning only: read and analyse, propose changes as text, do not attempt writes, commands or app changes.'
           : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(teamWays(key)))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),
         deviceServer: deviceServer || undefined,

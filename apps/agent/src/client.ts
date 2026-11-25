@@ -39,6 +39,8 @@ export function startClient(
   let attempt = 0
   let stopped = false
   let refused = false
+  // Asleep with the screen off (nap.ts): no link, and no trying for one, until the computer wakes for real
+  let resting = false
   let saidLocked = false
   let silence: NodeJS.Timeout | undefined
   let retry: NodeJS.Timeout | undefined
@@ -147,7 +149,7 @@ export function startClient(
       clearTimeout(silence)
       if (ws === sock) ws = null
       dropTunnels('the connection to the server dropped')
-      if (stopped) return
+      if (stopped || resting) return
       // Exponential backoff with jitter; sleep/wake and network changes end up here too
       const delay = refused ? rejectRetryMs : Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempt++) * (0.75 + Math.random() / 2)
       refused = false
@@ -165,6 +167,16 @@ export function startClient(
 
   connect()
   return {
+    // The server then takes the computer for what it is, offline, and its pings no longer wake it
+    rest(on: boolean) {
+      if (resting === on || stopped) return
+      resting = on
+      clearTimeout(retry)
+      if (on) return ws?.terminate()
+      attempt = 0
+      // A link still closing schedules its own way back as it ends
+      if (!ws) connect()
+    },
     // How long the server has had this computer on the current link; 0 with no link. A server that just came back asks
     // about what it left open in its first moments here
     linkedFor: () => (ws && welcomed ? Date.now() - welcomedAt : 0),

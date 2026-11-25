@@ -31,7 +31,8 @@ import { createChromeMac } from './chrome-mac.ts'
 import { selfUpdate, bundleUpdate, RESTART_CODE } from './self-update.ts'
 import { createLock } from './lock.ts'
 import { createAudit } from './audit.ts'
-import { createKeepAwake, awakeDefault, saveKeepAwake, watchWakes } from './keep-awake.ts'
+import { createKeepAwake, awakeDefault, holdsAfterWake, saveKeepAwake, watchWakes } from './keep-awake.ts'
+import { watchNaps } from './nap.ts'
 import { createSettings } from './settings.ts'
 import { createRestartGate } from './restart-gate.ts'
 import { newer, releaseOf, type SelfUpdateResult } from '@tgcv/protocol'
@@ -268,7 +269,7 @@ async function run() {
   const awake = createKeepAwake({ on: cfg.keepAwake ?? awakeDefault(process.platform), log, save: on => saveKeepAwake(configFile(), on) })
   awakeClose = awake.close
   // Woken from afar, the computer would go back to sleep before the user could give it a task
-  if (cfg.deviceId !== CLOUD_DEVICE_ID) {
+  if (cfg.deviceId !== CLOUD_DEVICE_ID && holdsAfterWake(process.platform)) {
     watchWakes(() => {
       log('woke from sleep: kept awake for a few minutes')
       awake.woke()
@@ -300,6 +301,14 @@ async function run() {
     keepAwake: () => (cfg.deviceId !== CLOUD_DEVICE_ID && awake.state().supported ? awake.state().on : undefined),
     screen: !!screen,
   })
+  // A Mac asleep under its lid: off the link, and nothing of ours keeps it up
+  if (cfg.deviceId !== CLOUD_DEVICE_ID && cfg.restAsleep !== false) {
+    watchNaps(resting => {
+      log(resting ? 'asleep with the screen off: off the link until it wakes' : 'awake again: back on the link')
+      awake.rest(resting)
+      client!.rest(resting)
+    })
+  }
   // The browser for Claude goes out through the server: its proxy lives here, only for this computer
   if (cfg.browserProxyPort) startSocks({ port: cfg.browserProxyPort, connect: (socket, host, port) => client!.tunnel(socket, host, port), log })
 }

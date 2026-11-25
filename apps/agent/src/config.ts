@@ -32,6 +32,9 @@ export type AgentConfig = {
   browserProxyPort: number
   // Kept from sleeping while a task runs; unset: the default of the system
   keepAwake?: boolean
+  // "restAsleep": false in the config keeps a Mac on the link in its wakes with no screen, as before 0.18.7: the way
+  // back by hand, should a Mac ever be taken for asleep while it is in use
+  restAsleep?: boolean
 }
 
 export const deviceOs = (): Hello['os'] =>
@@ -186,6 +189,7 @@ export function loadConfig(file = configFile(), home = homedir()): AgentConfig {
     missingZones: (raw.zones ?? []).filter((z: Zone) => !isDir(z.path)).map((z: Zone) => z.path),
     browserProxyPort: Number.isInteger(raw.browserProxyPort) ? raw.browserProxyPort : 1089,
     ...(typeof raw.keepAwake === 'boolean' && { keepAwake: raw.keepAwake }),
+    ...(raw.restAsleep === false && { restAsleep: false }),
     shared: (raw.shared ?? []).map((p: string) => {
       const path = p.replace(/^~(?=$|[\\/])/, homedir())
       if (!existsSync(path) || !statSync(path).isDirectory()) throw new Error(`Shared folder ${p}: no such folder (shared in ${file})`)

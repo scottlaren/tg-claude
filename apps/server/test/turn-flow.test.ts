@@ -45,14 +45,16 @@ function harness({ here = true, cloud = false, cfg = {}, media = { ffmpeg: null 
   const game = { id: 'game', name: 'game', path: 'C:/game', extraRoots: [] }
   const pc = { id: 'pc', name: 'PC', os: 'windows', shell: 'bash', projects: [game], apps: [], mcp: [], shared: [], connectedAt: 1 }
   let online = here
+  // The other computer's link: it can drop and come back in the middle of a turn
+  let macHere = elsewhere
   const cloudDevice = { id: 'cloud', name: 'Cloud', os: 'linux', shell: 'bash', projects: [], apps: [], mcp: [], shared: [], connectedAt: 1 }
   // Holds anything of the bot's that has to wait: a method and text to match, and when to let go
   const holds: { match: (c: Call) => boolean, until: Promise<void> }[] = []
   let refresh: Promise<void> = Promise.resolve()
   const gateway = {
     events: new EventEmitter(),
-    device: (id: string) => (online && id === 'pc' ? pc : cloud && id === 'cloud' ? cloudDevice : elsewhere && id === 'mac' ? mac : undefined),
-    devices: () => [...(online ? [pc] : []), ...(cloud ? [cloudDevice] : []), ...(elsewhere ? [mac] : [])],
+    device: (id: string) => (online && id === 'pc' ? pc : cloud && id === 'cloud' ? cloudDevice : macHere && id === 'mac' ? mac : undefined),
+    devices: () => [...(online ? [pc] : []), ...(cloud ? [cloudDevice] : []), ...(macHere ? [mac] : [])],
     refreshProjects: async () => {
       await refresh
       return pc.projects
@@ -141,6 +143,7 @@ function harness({ here = true, cloud = false, cfg = {}, media = { ffmpeg: null 
     dropProjects: () => { pc.projects = [] },
     restoreProjects: () => { pc.projects = [game] },
     setOnline: (on: boolean) => { online = on },
+    setMac: (on: boolean) => { macHere = on },
     record: () => JSON.parse(readFileSync(join(dir, 'in-flight.json'), 'utf8'))[0],
     onDisk: () => existsSync(join(dir, 'in-flight.json')),
     leftOnDisk: (over: object = {}) => writeFileSync(join(dir, 'in-flight.json'), JSON.stringify([{
@@ -936,8 +939,8 @@ test('Chrome whose account has spent its limit: the errand goes to another compu
   })
   h.registry.setProfile('pc', 'main')
   h.registry.setProfile('mac', 'work')
-  // As after the move at the limit: the topic is on work, its own Chrome is signed in to main
-  h.topics.set(KEY, { profile: 'work', profileOwn: true, browser: true })
+  // The topic is on work and has no Chrome switched on; the Chrome of its computer is signed in to main
+  h.topics.set(KEY, { profile: 'work', profileOwn: true })
   await h.text('look at the dashboard')
   const turn = h.processQueue(KEY)
   await until(() => h.runs.length === 1)
@@ -951,6 +954,160 @@ test('Chrome whose account has spent its limit: the errand goes to another compu
   const said = (await call).content[0].text
   assert.match(said, /^\[From Chrome on Mac, profile work\. Done here instead of PC \(profile main, until [^)]+\), at the limit of its Claude account: the sign-ins in this Chrome may differ\]\nRevenue is 42\./)
   assert.equal(h.runs.length, 2, 'no session on the spent account')
+  h.runs[0].finish()
+  await turn
+})
+
+// The topic is on work; the Chrome of its computer, the PC, is signed in to main, which is spent. browser: the topic
+// has Chrome switched on, as after a move at the limit
+const spentMain = (cfg: Record<string, unknown> = {}, browser = false) => {
+  const h = start({
+    chrome: true,
+    elsewhere: true,
+    cfg,
+    profiles: {
+      list: () => ['main', 'work'],
+      nameOf: (n?: string) => n ?? 'main',
+      env: (n?: string) => ({ CLAUDE_CONFIG_DIR: n ?? 'main' }),
+      lastLimit: (n: string) => (n === 'main' ? { status: 'rejected', resetsAt: Math.round(Date.now() / 1000) + 3600, at: Date.now() } : undefined),
+    },
+  })
+  h.registry.setProfile('pc', 'main')
+  h.registry.setProfile('mac', 'work')
+  h.topics.set(KEY, { profile: 'work', profileOwn: true, ...(browser && { browser }) })
+  return h
+}
+type Verdict = { hookSpecificOutput: { permissionDecision: string, permissionDecisionReason?: string } }
+// What the session's own Chrome says to a step into it
+const chromeStep = (run: { o: { chrome?: { PreToolUse?: { hooks: ((...a: never[]) => Promise<unknown>)[] }[] } } }, tool: string, input: Record<string, unknown>) =>
+  run.o.chrome!.PreToolUse![0].hooks[0]({ hook_event_name: 'PreToolUse', tool_name: `mcp__claude-in-chrome__${tool}`, tool_input: input } as never, 'x' as never, { signal: new AbortController().signal } as never) as Promise<Verdict>
+const throughServer = (h: ReturnType<typeof start>) => {
+  h.gateway.request = (async (_d: string, r: { tool: string }) => (r.tool === 'browser_proxy' ? { ok: true, result: { supported: true, on: true, pending: false, running: true, port: 1089 } } : { ok: true, result: { files: [] } })) as never
+}
+
+test('moved to another account, the topic works directly in the Chrome of the computer on that account', async () => {
+  const h = spentMain({}, true)
+  throughServer(h)
+  await h.text('look at the dashboard')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  const o = h.runs[0].o
+  assert.ok(o.chrome, 'Chrome is in the session itself')
+  assert.match(o.append, /The user's Chrome on "Mac" is connected/)
+  assert.match(o.append, /deviceId mac-chrome/)
+  assert.match(o.append, /This Chrome is on "Mac", not on "PC" where the project is/)
+  assert.ok(o.botServers?.browser_open, 'and can be started there')
+  const tools = (o.botServers?.browser_elsewhere as unknown as ErrandTools).instance._registeredTools
+  assert.match(tools.browse_on_computer.description, /\(PC\)/, 'no errand to the Chrome it has in hand')
+  assert.equal((await chromeStep(h.runs[0], 'select_browser', { deviceId: 'pc-chrome' })).hookSpecificOutput.permissionDecision, 'deny', 'the PC\'s is out of this session\'s reach')
+  assert.equal((await chromeStep(h.runs[0], 'select_browser', { deviceId: 'mac-chrome' })).hookSpecificOutput.permissionDecision, 'allow')
+  assert.equal(h.runs.length, 1, 'no session of an errand')
+  h.runs[0].finish()
+  await turn
+})
+
+test('that Chrome\'s computer away for a moment is waited for; gone, the step is refused with the reason', async () => {
+  const h = spentMain({ errandBackMs: 3000 }, true)
+  throughServer(h)
+  h.setMac(false)
+  h.registry.touch('mac', { lastSeen: Date.now() })
+  await h.text('look at the dashboard')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  assert.ok(h.runs[0].o.chrome, 'offered though its computer dropped the link a moment ago')
+  const step = chromeStep(h.runs[0], 'select_browser', { deviceId: 'mac-chrome' })
+  await sleep(60)
+  h.setMac(true)
+  assert.equal((await step).hookSpecificOutput.permissionDecision, 'allow')
+  h.runs[0].finish()
+  await turn
+
+  const gone = spentMain({ errandBackMs: 60 }, true)
+  throughServer(gone)
+  await gone.text('look at the dashboard')
+  const again = gone.processQueue(KEY)
+  await until(() => gone.runs.length === 1)
+  gone.setMac(false)
+  gone.registry.touch('mac', { lastSeen: Date.now() })
+  const refused = await chromeStep(gone.runs[0], 'select_browser', { deviceId: 'mac-chrome' })
+  assert.equal(refused.hookSpecificOutput.permissionDecision, 'deny')
+  assert.match(refused.hookSpecificOutput.permissionDecisionReason!, /Chrome on Mac can't be used now: that computer is offline, last seen less than a minute ago/)
+  gone.runs[0].finish()
+  await again
+})
+
+test('/browser in a topic whose own Chrome is on another account turns on the Chrome of the computer on its account', async () => {
+  const h = spentMain()
+  await h.text('/browser')
+  assert.equal(h.topics.get(KEY).browser, true)
+  assert.ok(h.said().some(s => /Browser on: .*Mac\. Chrome on PC is signed in to <b>main<\/b>, this topic runs on <b>work<\/b>/.test(s)), h.said().join(' | '))
+  await h.text('/browser')
+  assert.ok(h.said().filter(s => /Browser on: .*Mac/.test(s)).length === 2, 'asked again: what is on, with a way to turn it off')
+
+  // No such computer: as before, nothing to turn on
+  const alone = start({ chrome: true, profiles: { list: () => ['main', 'work'], nameOf: (n?: string) => n ?? 'main' } })
+  alone.registry.setProfile('pc', 'main')
+  alone.topics.set(KEY, { profile: 'work', profileOwn: true })
+  await alone.text('/browser')
+  assert.equal(alone.topics.get(KEY).browser, undefined)
+  assert.ok(alone.said().some(s => /Nothing to turn on/.test(s)))
+})
+
+test('a computer on that account that has been away for hours is not counted on: the errand is all there is', async () => {
+  const h = spentMain({}, true)
+  h.setMac(false)
+  h.registry.touch('mac', { lastSeen: Date.now() - 3 * 3600_000 })
+  await h.text('look at the dashboard')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  assert.equal(h.runs[0].o.chrome, undefined)
+  const tools = (h.runs[0].o.botServers?.browser_elsewhere as unknown as ErrandTools).instance._registeredTools
+  assert.match(tools.browse_on_computer.description, /\(PC, Mac\)/)
+  h.runs[0].finish()
+  await turn
+})
+type ErrandTools = { instance: { _registeredTools: Record<string, { description: string, handler: (a: unknown) => Promise<{ content: { text: string }[], isError?: boolean }> }> } }
+
+test('a computer away for the seconds in which the turn starts takes the errand once it is back', async () => {
+  const h = spentMain({ errandBackMs: 3000 })
+  // As a laptop does many times a day: its link dropped a moment ago
+  h.setMac(false)
+  h.registry.touch('mac', { lastSeen: Date.now() })
+  await h.text('look at the dashboard')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  const tools = (h.runs[0].o.botServers?.browser_elsewhere as unknown as ErrandTools).instance._registeredTools
+  assert.match(tools.browse_on_computer.description, /\(PC, Mac\)/, 'it is offered though it is away')
+  const call = tools.browse_on_computer.handler({ computer: 'PC', task: 'read the revenue' })
+  await sleep(60)
+  assert.equal(h.runs.length, 1, 'waiting for it')
+  h.setMac(true)
+  await until(() => h.runs.length === 2)
+  assert.equal(h.runs[1].o.env.CLAUDE_CONFIG_DIR, 'work')
+  h.runs[1].finish({ text: 'Revenue is 42.' })
+  assert.match((await call).content[0].text, /^\[From Chrome on Mac, profile work\. Done here instead of PC /)
+  h.runs[0].finish()
+  await turn
+})
+
+test('no Chrome could take the errand: the answer names the one at its limit and the one that is away', async () => {
+  const h = spentMain({ errandBackMs: 3000 })
+  h.setMac(false)
+  h.registry.touch('mac', { lastSeen: Date.now() - 3 * 3600_000 })
+  await h.text('look at the dashboard')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  const tools = (h.runs[0].o.botServers?.browser_elsewhere as unknown as ErrandTools).instance._registeredTools
+  const began = Date.now()
+  const out = await tools.browse_on_computer.handler({ computer: 'PC', task: 'read the revenue' })
+  assert.ok(Date.now() - began < 1000, 'one gone for hours is not waited for')
+  assert.equal(out.isError, true)
+  assert.match(out.content[0].text, /^Nothing was done\. At the limit of its Claude account: PC \(profile main, until [^)]+\)\. Could not take it instead: Mac: offline, last seen 3 h ago\. /)
+  assert.match(out.content[0].text, /Name in your answer each computer/)
+  // Asked for by name, it is not swapped for another: the user wanted that one
+  const direct = await tools.browse_on_computer.handler({ computer: 'Mac', task: 'read the revenue' })
+  assert.equal(direct.content[0].text, 'Mac: offline, last seen 3 h ago. Nothing was done.')
+  assert.equal(h.runs.length, 1, 'no session anywhere')
   h.runs[0].finish()
   await turn
 })

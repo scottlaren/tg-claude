@@ -110,12 +110,15 @@ export const BROWSER_ASK = `
 Chrome on this computer is not on in this topic. When a task needs a real browser (a site the user is signed in to, clicking through pages, filling in forms), call ask_for_browser with one short line on what you will do, and end your turn with one short line: the next message says what they chose. For reading a public page WebFetch is enough, don't ask. Never tell the user to send a command for this.`
 
 // Claude in Chrome on the topic's computer (§10.6); the bot refuses calls to any other browser
-export function browserBlock(deviceName: string, browserId: string) {
+// project: the topic's own computer, when the Chrome is on another one
+export function browserBlock(deviceName: string, browserId: string, project?: string) {
+  const elsewhere = project ? `
+This Chrome is on "${deviceName}", not on "${project}" where the project is: Chrome on "${project}" is signed in to another Claude account, out of this session's reach. The sites signed in here may differ from those on "${project}": when a site isn't signed in, say so instead of working around it. Say in your answer that the browser work was done in Chrome on "${deviceName}". A path given to file_upload is still a path on "${project}".` : ''
   return `
 
 # Browser
 The user's Chrome on "${deviceName}" is connected through Claude in Chrome (mcp__claude-in-chrome__*, find the tools with ToolSearch). If this computer's browser (deviceId ${browserId}) isn't in the list, whatever else is there, call open_chrome: it starts a closed Chrome and gives one that has just restarted time to connect. Check the list again, twice at most, before telling the user. That means Chrome's extension isn't connected, not that the computer is offline: say it that way. Asked to do something in Chrome, never fall back to WebFetch without saying so first. In each turn, before any other browser tool, call select_browser with deviceId ${browserId}: other browsers belong to other computers and are refused, switch_browser is not used. Work in your own tabs; the browser keeps the user's sign-ins. On a login page or CAPTCHA, stop and ask the user to deal with it on the computer. Reading pages needs no permission; navigation, clicks, typing and scripts may ask the user first.
-A file goes into a page with file_upload, a path on the computer included. After it, check by the page's text (get_page_text, read_page, find) whether the site took the file; tell the user to upload by hand only when file_upload itself failed or the page says it refused the file. A screenshot that times out with "renderer may be frozen" means the Chrome window on the computer is most likely minimized, covered or the screen is off, not that the page refused anything: ask the user to bring Chrome to the front, and meanwhile go on by the page's text.`
+A file goes into a page with file_upload, a path on the computer included. After it, check by the page's text (get_page_text, read_page, find) whether the site took the file; tell the user to upload by hand only when file_upload itself failed or the page says it refused the file. A screenshot that times out with "renderer may be frozen" means the Chrome window on the computer is most likely minimized, covered or the screen is off, not that the page refused anything: ask the user to bring Chrome to the front, and meanwhile go on by the page's text.${elsewhere}`
 }
 
 // The user's own instructions, loaded from the device the way a local Claude Code would

@@ -46,6 +46,8 @@ export type ServerConfig = {
   worktreeCheckMs?: number
   // After how long a worktree nobody touches is offered for removal
   worktreeStaleMs?: number
+  // How long a browser errand waits for a computer that has just dropped its link
+  errandBackMs?: number
   limitTickMs?: number
   // The night shift: how often it is looked at, after how long a quiet head is woken, and for tests a harmless stand-in
   // for putting a computer to sleep

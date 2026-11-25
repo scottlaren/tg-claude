@@ -25,6 +25,10 @@ export function awakeCommand(platform: NodeJS.Platform, agent: number): [string,
   return null
 }
 
+// Only where a wake nobody touched ends by itself. A Mac wakes under its closed lid many times an hour: held up after
+// each, it never slept
+export const holdsAfterWake = (platform: NodeJS.Platform) => platform === 'win32'
+
 // On by default on a Mac, which sleeps on its own lid and timers; a PC is left as its owner set it up
 export const awakeDefault = (platform: NodeJS.Platform) => platform === 'darwin'
 
@@ -43,9 +47,11 @@ export function createKeepAwake({ platform = process.platform, agent = process.p
   let child: ChildProcess | null = null
   let timer: NodeJS.Timeout | undefined
   let wokeUntil = 0
+  // Asleep with the screen off (nap.ts): nothing is asked of the system, whatever runs
+  let resting = false
 
   const start = (anyway = false) => {
-    if (child || !command || (!enabled && !anyway)) return
+    if (child || !command || resting || (!enabled && !anyway)) return
     try {
       child = spawn(command[0], command[1], { stdio: 'ignore', windowsHide: true })
       child.on('error', e => {
@@ -92,6 +98,11 @@ export function createKeepAwake({ platform = process.platform, agent = process.p
       enabled = next
       save(next)
       if (!next) stop()
+      else if (holds) start()
+    },
+    rest(on: boolean) {
+      resting = on
+      if (on) stop()
       else if (holds) start()
     },
     state: () => ({ on: enabled, supported: !!command, active: !!child }),
