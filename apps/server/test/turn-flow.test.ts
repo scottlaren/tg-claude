@@ -1908,3 +1908,81 @@ test('an agent is told what its computer has when it starts, and no more', async
   await turn
 })
 
+
+// One turn of a conversation: what Claude was given as the user's words, with the session it runs in
+async function turnOf(h: ReturnType<typeof start>, text: string, session: string) {
+  const n = h.runs.length
+  await h.text(text)
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === n + 1)
+  const run = h.runs[n]
+  run.o.onSession?.(session)
+  run.finish({ sessionId: session } as never)
+  await turn
+  return String(run.o.prompt)
+}
+
+test('a change in the instructions is said in the user\'s turn of a conversation under way, once; a new conversation needs no word', async () => {
+  const h = start()
+  h.topics.set(KEY, { sessionId: null })
+  assert.equal(await turnOf(h, 'hello', 's1'), 'hello', 'a new conversation has its instructions as they are')
+  assert.ok(h.topics.get(KEY).told, 'and the bot knows what it was given')
+  assert.equal(await turnOf(h, 'go on', 's1'), 'go on', 'nothing changed: nothing added')
+
+  h.topics.set(KEY, { mode: 'read' })
+  const told = await turnOf(h, 'look at this', 's1')
+  assert.match(told, /^\[From the bot, not the user's words\. Your instructions have changed since this conversation began/)
+  assert.match(told, /# Read-only topic\nThe user set this topic to review and planning only/)
+  assert.match(told, /\]\n\nlook at this$/, 'the user\'s words after it, as they were')
+  assert.equal(await turnOf(h, 'and this', 's1'), 'and this', 'said once')
+
+  h.topics.set(KEY, { mode: 'all' })
+  assert.match(await turnOf(h, 'now fix it', 's1'), /No longer in force: "# Read-only topic"\.\]\n\nnow fix it$/)
+
+  // /new: the next conversation renders everything anew
+  h.topics.set(KEY, { sessionId: null, mode: 'read' })
+  assert.equal(await turnOf(h, 'again', 's2'), 'again')
+})
+
+test('a conversation that began before the bot kept count is told what is in force now, the first time', async () => {
+  const h = start()
+  h.topics.set(KEY, { sessionId: 'old', mode: 'read' })
+  const first = await turnOf(h, 'hi', 'old')
+  assert.match(first, /# Read-only topic/)
+  assert.doesNotMatch(first, /# Economy mode|# Skills/, 'not the whole of its instructions')
+  assert.equal(await turnOf(h, 'more', 'old'), 'more')
+})
+
+test('an instruction file edited on the computer: a pointer to it, not its text; after a compaction nothing needs saying', async () => {
+  const h = start()
+  let content = 'Rules, first version.'
+  h.gateway.request = (async (_d: string, r: { tool: string }) => (r.tool === 'project_context'
+    ? { ok: true, result: { files: [{ label: 'Project CLAUDE.md', path: 'C:/game/CLAUDE.md', content, truncated: false }], project: h.gateway.device('pc')!.projects[0], skills: [] } }
+    : { ok: true, result: { files: [] } })) as never
+  h.topics.set(KEY, { sessionId: null })
+  assert.equal(await turnOf(h, 'hello', 's1'), 'hello')
+  content = 'Rules, second version, with a lot more in it.'
+  const told = await turnOf(h, 'go on', 's1')
+  assert.match(told, /# Project CLAUDE\.md\nThis instruction file on the computer has changed, or is new: C:\/game\/CLAUDE\.md\./)
+  assert.doesNotMatch(told, /second version/)
+  assert.equal(await turnOf(h, 'and on', 's1'), 'and on')
+
+  // Compacted by hand: its next request renders the instructions as they are then
+  content = 'Rules, third version.'
+  h.topics.set(KEY, { toldFresh: true })
+  assert.equal(await turnOf(h, 'after compact', 's1'), 'after compact')
+  assert.equal(h.topics.get(KEY).toldFresh, false)
+  assert.equal(await turnOf(h, 'still nothing', 's1'), 'still nothing')
+})
+
+test('the computer goes away in the middle of a conversation: said once, and once more when it is back', async () => {
+  const h = start()
+  h.topics.set(KEY, { sessionId: null })
+  assert.equal(await turnOf(h, 'hello', 's1'), 'hello')
+  h.setOnline(false)
+  const away = await turnOf(h, 'what do you think of the plan?', 's1')
+  assert.match(away, /# This topic's computer is offline\n"PC" is offline right now/)
+  assert.doesNotMatch(await turnOf(h, 'and of this?', 's1'), /computer is offline/, 'once')
+  h.setOnline(true)
+  assert.match(await turnOf(h, 'go on then', 's1'), /No longer in force: "# This topic's computer is offline"\./)
+})

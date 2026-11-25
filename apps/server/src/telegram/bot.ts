@@ -79,6 +79,7 @@ import { createLockMenu, createLocks } from './lock-menu.ts'
 import { moveCard, type PortableSettings } from './settings-move.ts'
 import { cleanable, firstNames, folderName, lastMoved, parseWorktrees, type Worktree } from './worktree-clean.ts'
 import { createHeavyStore } from './heavy.ts'
+import { instructionNotes, toldOf, type Section } from './told.ts'
 import { createChecklistServer, livePlan, finalPlan, CHECKLIST_SERVER, SET_CHECKLIST, type ChecklistStep } from '../claude/checklist-tools.ts'
 import { toolResultImage, imageMime } from '../claude/tool-results.ts'
 import { stageUploads } from '../claude/browser-upload.ts'
@@ -7010,13 +7011,51 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       ), { ...where(topicId), ...HTML }).catch(() => {})
     }
 
+    // The parts of the instructions that change while a conversation lives. A conversation under way keeps the
+    // instructions it began with, so a change in one of these is said in the user's turn, once (told.ts)
+    const browserPart = (bound ? browserBlock(chromeAt!.name, bound.deviceId, directFrom ? dev!.name : undefined) : canAskBrowser ? BROWSER_ASK : '')
+    const screenPart = (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '')
+    const readOnlyPart = (turnMode(key) === 'read'
+      ? '\n\n# Read-only topic\nThe user set this topic to review and planning only: read and analyse, propose changes as text, do not attempt writes, commands or app changes.'
+      : '')
+    const heldPart = heldBackBlock(heldBack)
+    const economyPart = (t.verbose ? '' : ECONOMY)
+    const decisionsPart = decisionsMenu.promptBlock(chatId)
+    const nightPart = (night.on(chatId) ? NIGHT_RULE : '')
+    const shiftPart = (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '')
+    const skillsPart = skillsBlock(skills.list(), ctx?.skills ?? [])
+    // With the computer away the whole of the instructions is another text (offlineAppend), which a conversation that
+    // began with the computer on never sees: the part that changes what it may do, in short
+    const awayPart = offline ? `\n\n# This topic's computer is offline\n"${deviceName(t.deviceId!)}" is offline right now: until it connects you can't read or change its files, run commands or use its apps. When something needs it, call defer_task for each task and carry on: deferred tasks start by themselves as soon as it connects. Never claim as done what is only deferred, and don't answer from memory of files as if you had just read them.` : ''
+    const sections: Section[] = [
+      { id: 'away', text: awayPart, core: true },
+      { id: 'night', text: nightPart, core: true },
+      { id: 'shift', text: shiftPart, core: true },
+      { id: 'read-only', text: readOnlyPart, core: true },
+      { id: 'browser', text: browserPart, core: !!bound },
+      { id: 'screen', text: screenPart, core: true },
+      { id: 'held', text: heldPart, core: true },
+      { id: 'decisions', text: decisionsPart, core: true },
+      { id: 'skills', text: skillsPart },
+      { id: 'economy', text: economyPart },
+      // The user's own instruction files: a pointer when one changes, its text would be thousands of words in every
+      // conversation. Claude's memory index is its own writing, and changes with it
+      ...(ctx?.files ?? []).filter(f => !/memory/i.test(f.label)).map(f => ({
+        id: `file:${f.path}`, sig: f.content,
+        text: `# ${f.label}\nThis instruction file on the computer has changed, or is new: ${f.path}. What you were given of it when this conversation began is out of date. Read it with read_file before going on, and follow it as it is now.`,
+      })),
+    ]
+    // A new conversation, or one just compacted, renders the instructions as they are now: nothing to add
+    const known = !t.sessionId || t.toldFresh ? null : t.told ?? 'legacy'
+    const notes = known ? instructionNotes(known, sections) : ''
+    if (notes) log.info('instructions told', { key, legacy: known === 'legacy', chars: notes.length })
     const started = Date.now()
     // The session as this turn last knew it. Anything else is a /new or another project, which this turn must not undo
     let session = t.sessionId ?? null
     let res
     try {
       res = await startTurn({
-        prompt: fullPrompt,
+        prompt: notes ? `${notes}\n\n${fullPrompt}` : fullPrompt,
         images,
         cwd: workDir,
         sessionId: t.sessionId,
@@ -7026,9 +7065,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         // §13 mode 1: say it up front instead of letting every change bounce off a denial
         append: (dev && project ? systemAppend(dev, project, dev.id, ctx, Object.keys(cfg.remoteMcp)) : offline ? offlineAppend(Object.keys(cfg.remoteMcp), deviceName(t.deviceId!), t.projectId!) : noProjectAppend(Object.keys(cfg.remoteMcp), gateway.devices().map(d => d.name)))
           + (dev && project && t.head ? ownComputerBlock(dev, isCloud(dev.id)) : '')
-          + (bound ? browserBlock(chromeAt!.name, bound.deviceId, directFrom ? dev!.name : undefined) : canAskBrowser ? BROWSER_ASK : '') + (screenOn ? screenBlock(dev!.name, dev!.os === 'macos') : '') + (turnMode(key) === 'read'
-          ? '\n\n# Read-only topic\nThe user set this topic to review and planning only: read and analyse, propose changes as text, do not attempt writes, commands or app changes.'
-          : '') + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(teamWays(key)))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldBackBlock(heldBack) + (t.verbose ? '' : ECONOMY) + decisionsMenu.promptBlock(chatId) + (night.on(chatId) ? NIGHT_RULE : '') + (shifts.running(key) ? shiftRule(shifts.running(key)!) : shiftOf(key) ? agentShiftRule : '') + skillsBlock(skills.list(), ctx?.skills ?? []) + (chatId > 0 ? WIDGET_PROMPT : ''),
+          + browserPart + screenPart + readOnlyPart + (t.head ? agentBlock(t.workerName ?? 'agent', t.worktree?.branch) : (plainGroup ? '' : TEAM + teamLinks(teamWays(key)))) + scheduleBlock(schedules.zoneChosen() ? schedules.zone() : null) + handIn.block(key) + heldPart + economyPart + decisionsPart + nightPart + shiftPart + skillsPart + (chatId > 0 ? WIDGET_PROMPT : ''),
         deviceServer: deviceServer || undefined,
         compactWindow: t.head ? AGENT_WINDOW : TOPIC_WINDOW,
         botServers,
@@ -7054,6 +7091,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
           if ((topics.get(key).sessionId ?? null) !== session) return
           session = id
           if (id !== topics.get(key).sessionId) topics.set(key, { sessionId: id })
+          // The prompt is with Claude now, the notes in it too
+          topics.set(key, { told: toldOf(sections), toldFresh: false })
           flights.session(key, id)
         },
         onStep: (name, input) => {
@@ -7096,7 +7135,11 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
           }
           drafter.kick()
         },
-        onCompacted: c => log.info('compacted', { key, pre: c.pre, post: c.post, trigger: 'auto' }),
+        onCompacted: c => {
+          log.info('compacted', { key, pre: c.pre, post: c.post, trigger: 'auto' })
+          // The instructions are rendered anew after it, from what this turn passed
+          topics.set(key, { told: toldOf(sections), toldFresh: false })
+        },
         onRetry: m => {
           net.retry()
           log.warn('api retry', { attempt: m.attempt, status: m.error_status })
@@ -7332,7 +7375,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     background((async () => {
       try {
         const out = await compactSession({ cwd: workDir, sessionId: t.sessionId!, model: modelOf(t), env: profiles.env(t.profile), onStderr: d => log.debug('claude', d.trim()) })
-        topics.set(key, { sessionId: out.sessionId, ...(out.context && { context: out.context }) })
+        topics.set(key, { sessionId: out.sessionId, toldFresh: true, ...(out.context && { context: out.context }) })
         log.info('compacted', { key, pre: out.pre, post: out.post, trigger: 'manual' })
         await show(compactedText(out.pre, out.post ?? out.context?.total))
       } catch (e) {

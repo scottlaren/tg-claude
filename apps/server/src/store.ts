@@ -72,6 +72,10 @@ export type Topic = {
   // Moved by the bot at a spent limit, by day: once the limit of the profile it left has reset (at), the topic goes back
   // to it, with profileOwn as it was
   profileBack?: { to: string, at: number, own: boolean }
+  // What this conversation was last told of the parts of its instructions that change (told.ts). toldFresh: its next
+  // request renders the instructions anew (it was just compacted), so what is current then is what it knows
+  told?: Record<string, { h: string, t: string }>
+  toldFresh?: boolean
   // "No project": a conversation with no computer; Claude may offer to open a project later
   noProject?: boolean
   // The icon that says the topic needs the owner, when it has one
