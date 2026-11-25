@@ -2,6 +2,18 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.18.9
+
+- **Claude always sees the computers.** What each computer has and how busy it is was shown only when this one was 70% busy or a heavy command was on record: asked where work is cheaper, Claude had nothing to answer with. Now the line is always there when more than one computer is online, and the advice to move heavy work starts at half busy.
+- **An agent knows its own computer.** An agent in the cloud measured it with the system's tools and reported the whole server, 6 processors and 11 GB, for a container given 4 and 6. Each agent is now told what its computer has and how busy it is.
+- **Where the work runs is on the team's board.** An agent on another computer than its head is marked with it, the cloud included, and the board's last line says how busy the team's computers are. /devices shows for each computer online its processors, memory and load.
+
+### Русский
+
+- **Claude всегда видит компьютеры.** Что есть у каждого компьютера и насколько он занят, показывалось, только когда этот был занят на 70% или была измерена тяжёлая команда: на вопрос, где работа выгоднее, Claude было нечем ответить. Теперь строка есть всегда, когда в сети больше одного компьютера, а совет переносить тяжёлое начинается с половины загрузки.
+- **Агент знает свой компьютер.** Агент в облаке мерил его системными командами и доложил про весь сервер, 6 процессоров и 11 ГБ, хотя контейнеру выдано 4 и 6. Теперь каждому агенту сказано, что есть у его компьютера и насколько он занят.
+- **На доске команды видно, где идёт работа.** Агент на другом компьютере, чем его хед, помечен этим компьютером, облако тоже, а в последней строке доски стоит загрузка компьютеров команды. /devices показывает для каждого компьютера в сети процессоры, память и загрузку.
+
 ## 0.18.8
 
 - **Claude knows where heavy work is cheaper.** Each computer says what it has (processors, memory), how busy it is and whether someone is working at it. When this computer is busy or a project has heavy commands on record, Claude sees all computers side by side and is told to send long work nobody waits for where there is room.
