@@ -2,6 +2,16 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.18.6
+
+- **Stale worktrees are offered for removal.** Agents' worktrees pile up, a few gigabytes each. Those nobody has touched for a week, with nothing uncommitted and no topic working in them, now come on a card that says how much room they take. A tap removes the folders; the branches stay, and `git worktree add` brings any of them back. "Not now" holds for a week.
+- **Light worktrees.** A repository can list its heavy folders in a `.worktree-skip` file in its root, one per line (`docs/playtest`). Worktrees for agents are then made without them, and Claude makes its own the same way. An agent is told what its copy lacks and how to get a folder when the work needs it.
+
+### Русский
+
+- **Залежавшиеся рабочие копии предлагаются к удалению.** Копии агентов копятся, по нескольку гигабайт каждая. Те, которые не трогали неделю, где нет незакоммиченного и не работает ни один топик, теперь приходят карточкой с тем, сколько места они занимают. По нажатию удаляются папки; ветки остаются, и `git worktree add` вернёт любую. «Не сейчас» действует неделю.
+- **Лёгкие рабочие копии.** Репозиторий может перечислить свои тяжёлые папки в файле `.worktree-skip` в корне, по одной на строку (`docs/playtest`). Копии для агентов создаются без них, и Claude делает свои так же. Агенту сказано, чего в его копии нет и как получить папку, когда она нужна для работы.
+
 ## 0.18.5
 
 - **A computer's key never travels in the open.** The agent no longer connects or pairs over a plain `ws://` address, except to a server on the same computer: its key would be readable on the way. Computers connected with the line from /pair already use `wss://` and notice nothing.
