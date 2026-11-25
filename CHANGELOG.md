@@ -2,6 +2,24 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.18.7
+
+- **Another computer's Chrome, worked in directly.** A topic that moved to another account at a spent limit reached the Chrome of the computer on that account only through errands: a new short session for every request, retelling what it saw. Now that Chrome is in the topic's own session, step by step, like its own; the answer says which computer's Chrome did the work.
+- **A spare Chrome is found even if its computer blinked.** The computers whose Chrome could take browser work were listed once, as a task began: a laptop whose link dropped for those few seconds was left out of the whole task. Now they are looked at when Chrome is needed, and one that dropped a moment ago is waited for, up to half a minute.
+- **A Chrome that wasn't used is named.** When no Chrome could do the work, the answer says for each computer why: its account is at the limit, it is offline and since when, it is locked.
+- **A Mac with its lid closed sleeps, and is offline.** Under a closed lid a Mac wakes for seconds, over and over, and the agent ran in each wake: it showed online and offline by turns, and held the Mac up for five minutes after a longer sleep. Now the agent tells such a wake from a real one, leaves the link and asks nothing of the system until the Mac is opened. A dark screen during a night's work is not a sleep.
+- **A napping laptop keeps its link.** A Mac on battery sleeps in short stretches, some a second longer than the server's ping, and was cut off for each: 266 times in one day. One ping without an answer is forgiven now; two in a row still end the link, within 45 seconds.
+- **The server's log says why a computer went offline.** It didn't answer the pings, or it closed the link itself, and how long the link had held.
+
+### Русский
+
+- **Chrome другого компьютера, напрямую.** Топик, который при исчерпанном лимите перешёл на другой аккаунт, доставал Chrome компьютера с этим аккаунтом только через поручения: на каждый запрос новая короткая сессия и пересказ увиденного. Теперь этот Chrome подключён к самой сессии топика, шаг за шагом, как свой; в ответе сказано, чей Chrome делал работу.
+- **Запасной Chrome находится, даже если его компьютер моргнул.** Компьютеры, чей Chrome может взять работу в браузере, перечислялись один раз, в начале задачи: ноутбук, у которого связь пропала на эти несколько секунд, выпадал на всю задачу. Теперь на них смотрят в момент, когда нужен Chrome, а того, кто отвалился только что, ждут до полуминуты.
+- **Chrome, которым не воспользовались, назван.** Когда работу в браузере не смог взять никто, в ответе по каждому компьютеру сказано почему: лимит аккаунта, не в сети и с какого времени, заблокирован.
+- **Mac с закрытой крышкой спит и не в сети.** Под закрытой крышкой Mac раз за разом просыпается на секунды, и агент работал в каждом таком пробуждении: компьютер мелькал «в сети / не в сети», а после сна подольше агент ещё пять минут не давал ему уснуть. Теперь агент отличает такое пробуждение от настоящего, уходит со связи и ничего не просит у системы, пока Mac не откроют. Погашенный экран во время ночной работы сном не считается.
+- **Дремлющий ноутбук не теряет связь.** Mac на батарее спит короткими отрезками, иногда на секунду дольше пинга сервера, и за каждый такой отрезок получал обрыв: 266 раз за день. Один пинг без ответа теперь прощается; два подряд по-прежнему рвут связь, не позже чем через 45 секунд.
+- **Журнал сервера пишет, почему компьютер пропал из сети.** Не ответил на пинги или сам закрыл связь, и сколько она продержалась.
+
 ## 0.18.6
 
 - **Stale worktrees are offered for removal.** Agents' worktrees pile up, a few gigabytes each. Those nobody has touched for a week, with nothing uncommitted and no topic working in them, now come on a card that says how much room they take. A tap removes the folders; the branches stay, and `git worktree add` brings any of them back. "Not now" holds for a week.
