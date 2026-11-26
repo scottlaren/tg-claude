@@ -245,6 +245,8 @@ type Live = {
   abort: AbortController | null
   draftId: number
   allowAll: boolean
+  // ⚡ said under a question about a file for a group that others read: files go there unasked until the task ends
+  filesFree?: boolean
   timer: NodeJS.Timeout | undefined
   waitingDevice: boolean
   // This turn answers another topic: it can't do more than that topic could
@@ -4707,9 +4709,15 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     clearTimeout(p.timer)
     showState(p.key, 'idle')
     const verdict = ctx.match[1] as Verdict
-    if (verdict === 'all') p.live.allowAll = true
+    // A file for a group that others read is asked about in every mode. The answer given under that very question holds
+    // as it says: for the task, or for the topic. Given under any other question it says nothing about files
+    const aboutFile = isDeviceTool(p.tool) && deviceToolOf(p.tool) === 'send_file'
+    if (verdict === 'all') {
+      p.live.allowAll = true
+      if (aboutFile) p.live.filesFree = true
+    }
     // An explicit, lasting rule for this topic (§13); /mode switches it back
-    if (verdict === 'forever') topics.set(p.key, { mode: 'all' })
+    if (verdict === 'forever') topics.set(p.key, { mode: 'all', ...(aboutFile && { filesFree: true }) })
     log.info('permission', { key: p.key, tool: p.tool, verdict })
     // Allowed with exactly the parameters the user saw (§13)
     p.resolve(verdict === 'no'
@@ -5154,7 +5162,10 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       const grant = device && deviceToolOf(tool) === 'add_project_folder'
       // Read on every call: a mode switched mid-task applies to the next call
       const mode = turnMode(key)
-      if (device && deviceToolOf(tool) === 'send_file' && !await mayReveal(chatId)) return askPermission(chatId, topicId, l, key, tool, input, where_, signal)
+      // A file is not masked as text is, so one bound for a group that others read is asked about whatever the mode,
+      // until the user has said under such a question to stop: for this task, or for this topic
+      const filesFree = l.filesFree || (mode === 'all' && !!topics.get(key).filesFree)
+      if (device && deviceToolOf(tool) === 'send_file' && !filesFree && !await mayReveal(chatId)) return askPermission(chatId, topicId, l, key, tool, input, where_, signal)
       const decision = grant ? (mode === 'read' ? 'deny' : mode === 'all' ? 'allow' : 'ask') : decide({ mode, readOnly, fileEdit, allowAllForTask: l.allowAll })
       if (decision === 'allow') {
         if (!readOnly) log.info('permission', { key, tool, verdict: l.allowAll && mode === 'ask' ? 'all (earlier ⚡)' : `mode ${mode}` })
@@ -5477,6 +5488,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       l.runs.clear()
       l.abort = null
       l.allowAll = false
+      l.filesFree = false
       running--
       if (!l.queue.length) showState(key, turnState(outcome))
       wakeWaiters()

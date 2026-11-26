@@ -524,6 +524,59 @@ test('after a restart the team board is edited in place, not sent and pinned aga
   await h.stop?.()
 })
 
+test('a file for a group that others read is asked about until the user says, under that question, to stop', async () => {
+  const h = start()
+  h.bot.api.config.use(async (prev, method, payload) => (method === 'getChatMemberCount' ? { ok: true, result: 5 } as never : prev(method, payload)))
+  const cards = () => h.calls.flatMap(c => JSON.stringify(c.payload).match(/ok:(\d+)/)?.[1] ?? [])
+  const send = (run: number) => h.runs[run].o.canUseTool!('mcp__device__send_file', { path: 'report.pdf' }, { signal: new AbortController().signal, mcpServer: { source: 'sdk', name: 'device' } } as never)
+  const allowed = async (p: ReturnType<typeof send>) => assert.equal((await p)?.behavior, 'allow')
+
+  // The topic is in “everything without asking”, and the file is asked about all the same
+  await h.text('send the reports')
+  await until(() => h.runs.length === 1)
+  const first = send(0)
+  await until(() => cards().length === 1)
+  await h.tap(`ok:${cards()[0]}`)
+  await allowed(first)
+  const second = send(0)
+  await until(() => cards().length === 2, 3000)
+  // ⚡ under it: the rest of this task's files go unasked
+  await h.tap(`all:${cards()[1]}`)
+  await allowed(second)
+  await allowed(send(0))
+  assert.equal(cards().length, 2)
+  h.runs[0].finish()
+  await h.idle()
+
+  // The next task asks again; “stop asking in this topic” under it is for good
+  await h.text('and the invoices')
+  await until(() => h.runs.length === 2)
+  const third = send(1)
+  await until(() => cards().length === 3, 3000)
+  await h.tap(`forever:${cards()[2]}`)
+  await allowed(third)
+  assert.equal(h.topics.get(KEY).filesFree, true)
+  await allowed(send(1))
+  h.runs[1].finish()
+  await h.idle()
+  await h.text('and the contracts')
+  await until(() => h.runs.length === 3)
+  await allowed(send(2))
+  assert.equal(cards().length, 3, 'no more questions about files in this topic')
+
+  // Said under another question, “stop asking” says nothing about files: another topic's rule is its own
+  h.runs[2].finish()
+  await h.idle()
+  h.topics.set(KEY, { filesFree: undefined })
+  await h.text('one more')
+  await until(() => h.runs.length === 4)
+  const again = send(3)
+  await until(() => cards().length === 4, 3000)
+  await h.tap(`no:${cards()[3]}`)
+  assert.equal((await again)?.behavior, 'deny')
+  h.runs[3].finish()
+})
+
 test('while Telegram cannot edit the board, the board waits: it is not sent again and again', async () => {
   const h = start({ cfg: { boardTickMs: 50 } })
   const agent = `${GROUP}:9`

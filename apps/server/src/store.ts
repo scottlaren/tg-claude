@@ -26,6 +26,9 @@ export type Suggestion = { id: number, replies: string[], messageId?: number, md
 
 export type Topic = {
   mode?: Mode
+  // “Stop asking in this topic”, said under a question about a file for a group that others read: files go there
+  // unasked while the topic stays in “everything without asking”
+  filesFree?: boolean
   // Per-topic model choice; unset means the server's defaults (CLAUDE_MODEL / CLAUDE_EFFORT)
   model?: string
   effort?: Effort

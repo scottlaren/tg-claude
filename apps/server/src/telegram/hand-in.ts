@@ -18,7 +18,7 @@ const GONE_CHECK_MS = 2000
 
 type Item = { text: string, images: PromptImage[], msgId?: number, shownId?: number, scheduleId?: string, waitMark?: boolean, fromMode?: Mode, rush?: boolean, ownAnswers?: boolean, continuation?: unknown }
 export type HandInLive<I extends Item = Item> = {
-  busy: boolean, queue: I[], allowAll: boolean, modeCap?: Mode, ownerSpoke?: boolean, abort: AbortController | null
+  busy: boolean, queue: I[], allowAll: boolean, filesFree?: boolean, modeCap?: Mode, ownerSpoke?: boolean, abort: AbortController | null
   // Sent into the turn, the CLI hasn't confirmed reading it yet
   handing?: { id: string, items: I[] }[]
   now?: { kick: () => void, toolSince: number }
@@ -124,6 +124,7 @@ export function createHandIn<I extends Item, L extends HandInLive<I>>({ live, ch
           if (cap) {
             l.modeCap = l.modeCap ? stricterMode(l.modeCap, cap) : cap
             l.allowAll = false
+            l.filesFree = false
             changed(key, l)
           }
           const id = randomUUID()
