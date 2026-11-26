@@ -2,6 +2,24 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.19.1
+
+- **Mentioned with nothing asked, a companion joins the conversation.** A bare `@claude` used to get “what do you need?”. Now the conversation above is the request: it reads what was just discussed and what the message replies to, and answers that.
+- **A companion looks at albums and can follow pictures.** A reply to one picture of an album shows it the whole album, up to six. Switched on in the card, it also looks at every picture as it comes, silently, and keeps a line about what it shows: up to 40 a day for a chat.
+- **A companion sees what you reply to in a supergroup.** A reply to a picture, a voice message or a table was taken for no reply at all when it answered the first message of its thread, which is most replies: the picture was not looked at, and a bare `@claude` got “what do you need?”. Tables and other formatted messages are now read as their text. The same mistake dropped the replied message from Claude's view in a workspace without topics.
+- **A team's board is no longer sent over and over when Telegram stumbles.** When an edit of the board failed for any reason, the bot sent a new board. On the night of 26.11 Telegram refused edits for an hour and then answered slowly: every head's topic got some thirty copies of its board within minutes. A new board is now sent only when the old one is gone; otherwise the bot waits and tries the edit again.
+- **An answer is no longer lost to an emoji in a command.** The list of steps under an answer shortens each command to 70 characters; with an emoji at the cut, half of it was left, and Telegram refused the whole answer: three tries, then “turn failed” and nothing in the chat. Text is now cut between characters, and everything leaving for Telegram is checked once more.
+- **The buttons of a companion's card fit a phone.** “Switch the web off” and its like were cut in the middle of a word. A switch is now named by what it switches, with a tick while it is on.
+
+### Русский
+
+- **Если собеседника отметили, ничего не спросив, он включается в разговор.** На голый `@claude` он раньше отвечал «что нужно?». Теперь запрос — это сам разговор: он читает, что только что обсуждали и на что ответили, и отвечает по делу.
+- **Собеседник смотрит альбомы и может следить за картинками.** Ответ на одну картинку из альбома показывает ему весь альбом, до шести штук. Если включить в карточке, он смотрит каждую картинку сразу и молча и хранит строчку о том, что на ней: до 40 в день на чат.
+- **Собеседник видит, на что ему ответили в супергруппе.** Ответ на картинку, голосовое или таблицу не считался ответом, если он шёл на первое сообщение своей ветки, а это большинство ответов: картинку бот не смотрел, а на голый `@claude` спрашивал «что нужно?». Таблицы и другие оформленные сообщения теперь читаются как текст. Та же ошибка прятала от Claude сообщение, на которое ответили, в воркспейсе без топиков.
+- **Доска команды больше не присылается снова и снова, когда у Telegram сбой.** Если правка доски не проходила по любой причине, бот отправлял новую доску. В ночь на 26.11 Telegram час отклонял правки, а потом отвечал медленно: в топике каждого хеда за несколько минут появилось около тридцати копий доски. Теперь новая доска отправляется, только если старой больше нет; иначе бот ждёт и пробует править снова.
+- **Ответ больше не теряется из-за эмодзи в команде.** В списке шагов под ответом каждая команда обрезается до 70 символов; если на месте обрезки стоял эмодзи, от него оставалась половина, и Telegram отказывался принять весь ответ: три попытки, потом «turn failed» и пустота в чате. Теперь текст режется между символами, а всё, что уходит в Telegram, проверяется ещё раз.
+- **Кнопки в карточке собеседника помещаются на телефоне.** «Выключить интернет» и подобные обрезались посреди слова. Переключатель теперь называется тем, что он переключает, с галочкой, пока включён.
+
 ## 0.19.0
 
 - **A companion for a group chat.** Added to a group, the bot now asks what it is there for: a workspace, or a companion that answers everyone in the chat who addresses it with `@bot`, `@claude` or a reply. A companion only talks: no computer, file, command or setting exists in such a chat, for you either. It searches the web and reads links, shows pictures from Wikimedia Commons, sets reminders, hears a voice message or sees a picture that someone replies to, and remembers the last 300 messages plus a notebook of what came before.
