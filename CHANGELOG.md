@@ -2,6 +2,14 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.19.2
+
+- **“Stop asking” works for files in a group.** A file bound for a group that others read is asked about in every mode, and the two buttons under that question, “until the task ends” and “stop asking in this topic”, did nothing for the next file: each one asked again. They now hold as they say, when tapped under a question about a file.
+
+### Русский
+
+- **«Больше не спрашивать» работает для файлов в группе.** Про файл для группы, которую читают другие, бот спрашивает в любом режиме, и две кнопки под этим вопросом, «до конца задачи» и «больше не спрашивать тут», на следующий файл не действовали: вопрос приходил снова. Теперь они действуют, как написано, если нажаты под вопросом о файле.
+
 ## 0.19.1
 
 - **Mentioned with nothing asked, a companion joins the conversation.** A bare `@claude` used to get “what do you need?”. Now the conversation above is the request: it reads what was just discussed and what the message replies to, and answers that.
