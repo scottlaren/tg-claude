@@ -134,9 +134,9 @@ function harness() {
       return id
     },
     // The same without waiting for the answer: what the chat does while the bot is still writing
-    async meanwhile(chat: number, user: number, text: string) {
+    async meanwhile(chat: number, user: number, text: string, extra: Record<string, unknown> = {}) {
       const id = ++update
-      await bot.handleUpdate({ update_id: id, message: { message_id: id, date: 1_800_000_000, chat: chatOf(chat), from: from(user), text } } as never)
+      await bot.handleUpdate({ update_id: id, message: { message_id: id, date: 1_800_000_000, chat: chatOf(chat), from: from(user), ...(text && { text }), ...extra } } as never)
       return id
     },
     reacted: (chat: number, user: number, id: number, emoji: string) => bot.handleUpdate({
@@ -203,6 +203,9 @@ test('added to a group the bot is nothing until its owner chooses; a companion i
   const card = textOf(to(h, OWNER)[0])
   assert.match(card, /Friends[\s\S]*not switched on yet[\s\S]*Sonnet/)
   assert.match(card, new RegExp(`data="cmp:${c.key}:on"`))
+  // Two to a row on a phone: a name that does not fit is cut in the middle of a word
+  for (const [, label] of card.matchAll(/<tg-button[^>]*>([^<]+)<\/tg-button>/g)) assert.ok([...label].length <= 15, label)
+  assert.match(card, />🌐 The web ✓<[\s\S]*>🎙 Voices<[\s\S]*>🖼 Pictures<[\s\S]*>🌅 Advice</, 'a switch says what it switches, ticked while it is on')
   assert.ok(!card.includes(String(CHAT)), "the chat's id is not in the card: a number that long gets masked")
   h.reset()
 
@@ -740,10 +743,83 @@ test('a voice message or a picture reaches Claude only through a reply; a file n
   assert.equal(h.turns[3].images!.length, 1)
   assert.equal(fetched.length, 2)
 
+  // In a supergroup a reply carries the id of the message its thread began with: for a reply to that very message it
+  // is the same number, and the reply is a reply all the same
+  await h.text(CHAT, BORIS, '@claude rate each', { message_thread_id: 9100, reply_to_message: { ...inChat, message_id: 9100, from: { id: ANNA, is_bot: false, first_name: 'Anna' }, photo: [{ file_id: 'p', width: 800, height: 800, file_size: 50_000 }] } })
+  assert.equal(h.turns.at(-1)!.images!.length, 1, 'the picture it replies to is looked at')
+  assert.match(h.turns.at(-1)!.prompt, /The picture attached to this request is message #9100 from Anna/)
+  // A table says what is in it
+  const table = { blocks: [{ type: 'table', cells: [[{ text: [{ type: 'text', text: 'Plan' }] }, { text: [{ type: 'text', text: 'Price' }] }], [{ text: [{ type: 'text', text: 'Basic' }] }, { text: [{ type: 'text', text: '10' }] }]] }] }
+  await h.text(CHAT, BORIS, '@claude', { message_thread_id: 9200, reply_to_message: { ...inChat, message_id: 9200, from: { id: ANNA, is_bot: false, first_name: 'Anna' }, rich_message: table } })
+  assert.match(h.turns.at(-1)!.prompt, /It replies to an older message from Anna \(id 111\): Plan \| Price Basic \| 10/)
+
   // Too long a recording is not listened to at all
   await h.text(CHAT, BORIS, '@claude and this?', { reply_to_message: { ...inChat, message_id: 9001, from: { id: ANNA, is_bot: false, first_name: 'Anna' }, voice: { file_id: 'v2', duration: 3600 } } })
-  assert.equal(fetched.length, 2)
-  assert.match(h.turns[4].prompt, /could not be made out/)
+  assert.equal(fetched.length, 3)
+  assert.match(h.turns.at(-1)!.prompt, /could not be made out/)
+})
+
+test('mentioned with nothing asked, the bot is told that the conversation is the request', async () => {
+  const h = await companionChat()
+  await h.text(CHAT, ANNA, 'three plans or four on the pricing page?')
+  await h.text(CHAT, BORIS, 'no idea, both look fine to me')
+  await h.text(CHAT, ANNA, '@claude')
+  assert.match(h.turns[0].system, /join the conversation[\s\S]*Never answer that with "what do you need\?"/)
+  assert.match(h.turns[0].prompt, /@claude\nIt is a bare mention with no request of its own: the request is the conversation above\. Join in with what helps there\.$/)
+  await h.text(CHAT, BORIS, '@example_bot ?!', { reply_to_message: { date: 1, chat: { id: CHAT, type: 'supergroup' }, message_id: 9300, from: { id: ANNA, is_bot: false, first_name: 'Anna' }, text: 'an older question that left the window' } })
+  assert.match(h.turns[1].prompt, /the request is the conversation above and what it replies to/)
+  await h.text(CHAT, ANNA, '@claude three or four?')
+  assert.ok(!h.turns[2].prompt.includes('bare mention'), 'a question is a question')
+})
+
+test('an album is looked at whole, whichever of its pictures was replied to', async t => {
+  const fetched: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    fetched.push(String(url))
+    return new Response('bytes')
+  })
+  const h = await companionChat()
+  const photo = (id: string) => [{ file_id: `${id}-s`, width: 90, height: 90, file_size: 1000 }, { file_id: id, width: 1280, height: 1280, file_size: 200_000 }]
+  const first = await h.text(CHAT, ANNA, '', { caption: 'four logos', photo: photo('a'), media_group_id: 'g1' })
+  const second = await h.text(CHAT, ANNA, '', { photo: photo('b'), media_group_id: 'g1' })
+  const third = await h.text(CHAT, ANNA, '', { photo: photo('c'), media_group_id: 'g1' })
+  assert.deepEqual([h.turns.length, fetched.length], [0, 0], 'nobody asked: nothing is looked at')
+  await h.text(CHAT, BORIS, '@claude rate each', { message_thread_id: second, reply_to_message: { date: 1, chat: { id: CHAT, type: 'supergroup' }, message_id: second, from: { id: ANNA, is_bot: false, first_name: 'Anna' }, photo: photo('b'), media_group_id: 'g1' } })
+  assert.equal(h.turns[0].images!.length, 3)
+  assert.match(h.turns[0].prompt, new RegExp(`The 3 pictures attached to this request are the album it replies to \\(messages #${first}, #${second}, #${third}\\), from Anna \\(id 111\\), in that order\\.`))
+
+  // Sent to the bot as an album: its pictures come one message after another, and all of them are waited for
+  await h.meanwhile(CHAT, ANNA, '', { caption: '@claude which is best?', photo: photo('d'), media_group_id: 'g2' })
+  await h.meanwhile(CHAT, ANNA, '', { photo: photo('e'), media_group_id: 'g2' })
+  await h.idle()
+  assert.equal(h.turns[1].images!.length, 2)
+  assert.match(h.turns[1].prompt, /The 2 pictures attached to this request came with the message, as one album\./)
+})
+
+test('switched on, pictures are looked at as they come, and what each shows is part of the talk', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response('bytes'))
+  const h = await companionChat()
+  await h.tap(OWNER, OWNER, `cmp:${h.key}:pic`)
+  assert.equal(h.kept()[CHAT].pictures, true)
+  h.reset()
+  h.answers(o => (o.system.startsWith('A picture was posted') ? { text: 'A blue fox on a white ground, the word “Glasser” under it.' } : { text: 'Fine.' }))
+  const posted = await h.text(CHAT, ANNA, '', { caption: 'our new logo', photo: [{ file_id: 'p', width: 800, height: 800, file_size: 50_000 }] })
+  assert.equal(h.turns.length, 1)
+  const look = h.turns[0]
+  assert.deepEqual([look.model, look.search, look.remind, look.findPicture, look.mayOpen, look.images!.length, look.prompt], ['haiku', false, undefined, undefined, undefined, 1, 'Its caption: our new logo'], 'the cheap model, the picture, and no tool at all')
+  assert.equal(h.said().length, 0, 'no sign of it in the chat')
+  await h.text(CHAT, BORIS, '@claude what do you think of it?')
+  assert.match(h.turns[1].prompt, new RegExp(`#${posted} Anna \\(@anna, id 111\\): \\[picture\\] our new logo \\(shows: A blue fox on a white ground, the word “Glasser” under it\\.\\)`))
+  assert.match(h.turns[1].system, /A picture marked "\(shows: \.\.\.\)" was looked at for you beforehand/)
+
+  // What must not be said is not kept as a description either; and a pause stops the looking
+  h.answers(o => (o.system.startsWith('A picture was posted') ? { text: `A note that reads ${MAIL}` } : { text: 'Fine.' }))
+  await h.text(CHAT, ANNA, '', { photo: [{ file_id: 'q', width: 800, height: 800, file_size: 50_000 }] })
+  assert.ok(!JSON.stringify(h.memory()).includes('q7xk2mfa9d'))
+  const turns = h.turns.length
+  await h.tap(OWNER, OWNER, `cmp:${h.key}:off`)
+  await h.text(CHAT, ANNA, '', { photo: [{ file_id: 'r', width: 800, height: 800, file_size: 50_000 }] })
+  assert.equal(h.turns.length, turns)
 })
 
 test('switched on, short voice messages are heard as they come, with no sign of it in the chat', async t => {

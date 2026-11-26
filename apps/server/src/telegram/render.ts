@@ -13,7 +13,7 @@ type Input = Record<string, unknown>
 
 const str = (v: unknown) => (v === undefined || v === null ? '' : String(v))
 const code = (s: string) => '`' + s.replace(/`/g, "'").replace(/\s+/g, ' ').trim() + '`'
-const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+import { trunc } from './text.ts'
 const commandLine = (i: Input) => str(i.command) || [str(i.program), ...((i.args as string[]) ?? [])].join(' ')
 
 const STEP_ICON: Record<DeviceTool, string> = {

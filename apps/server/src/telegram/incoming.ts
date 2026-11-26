@@ -109,10 +109,11 @@ const REPLY_MEDIA: [keyof Message, string][] = [['photo', 'a photo'], ['video', 
 
 // Which earlier message the user is replying to, for Claude: its words alone may only say «redo this». ownSticker: what
 // a sticker the bot sent was made from, by its message: a sticker has no words, and «redo it» needs to know which one
-export function replyContext(m: Pick<Message, 'reply_to_message' | 'quote' | 'message_thread_id' | 'from'>, ownSticker?: (messageId: number) => string | undefined) {
+export function replyContext(m: Pick<Message, 'reply_to_message' | 'quote' | 'message_thread_id' | 'is_topic_message' | 'from'>, ownSticker?: (messageId: number) => string | undefined) {
   const r = m.reply_to_message
-  // In a topic Telegram marks every message as a reply to the topic's first, service one: not the user's doing
-  if (!r || r.forum_topic_created || r.message_id === m.message_thread_id) return ''
+  // In a topic Telegram marks every message as a reply to the topic's first, service one: not the user's doing. Outside
+  // topics a supergroup gives a reply the id of its thread's first message, and a reply to that message is a real one
+  if (!r || r.forum_topic_created || (m.is_topic_message && r.message_id === m.message_thread_id)) return ''
   const said = m.quote?.text ?? r.text ?? r.caption ?? (r.rich_message ? richPlain(r.rich_message.blocks) : '')
   const media = REPLY_MEDIA.find(([field]) => r[field])?.[1]
   // In a group it can be anyone's: what someone else wrote must not read as the user's own words

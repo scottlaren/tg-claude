@@ -20,7 +20,7 @@ import { lang, tr } from '../i18n.ts'
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const where = (topicId?: number) => (topicId ? { message_thread_id: topicId } : {})
 const HTML = { parse_mode: 'HTML' } as const
-const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+import { trunc } from './text.ts'
 const TICK_MS = 30_000
 
 const parseKey = (key: string) => {

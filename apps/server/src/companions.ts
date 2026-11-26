@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { readJson, writeJson } from './store.ts'
+import { cut } from './telegram/text.ts'
 
 // A companion chat is an ordinary group where the bot only talks: it answers whoever addresses it and has no computer,
 // project or tool behind it. It is kept apart from workspaces on purpose: nothing that looks a chat up as a workspace
@@ -11,9 +12,10 @@ import { readJson, writeJson } from './store.ts'
 // search: the web, a search and the reading of pages
 // advice: a word of unasked-for advice to one person of the chat each morning
 // voices: short voice messages are heard as they come, so that the talk is followed whole
+// pictures: the same for photos: each is looked at once, and what it shows is kept as a line of text
 export type Companion = {
   key: string, title: string, owner: number, on: boolean, introduced?: boolean,
-  model: string, profile?: string, daily: number, search: boolean, advice?: boolean, voices?: boolean, addedAt: number,
+  model: string, profile?: string, daily: number, search: boolean, advice?: boolean, voices?: boolean, pictures?: boolean, addedAt: number,
 }
 
 export type ChatMsg = {
@@ -23,6 +25,10 @@ export type ChatMsg = {
   own?: true,
   // A voice message whose text is what it said
   heard?: true,
+  // A photo: the file Telegram keeps it as, the album it came in, and what it shows once somebody has looked
+  photo?: string,
+  group?: string,
+  shows?: string,
 }
 
 export type Reminder = { id: string, at: number, by: number, name: string, username?: string, text: string, thread?: number }
@@ -34,6 +40,8 @@ type ChatData = {
   messages: ChatMsg[], notes: string, day: string, used: Record<string, number>, reminders: Reminder[],
   // Seconds of voice heard today without being asked
   voiceSec?: number
+  // Pictures looked at today without being asked
+  pictureN?: number
   // The day the morning's advice was last thought about, and who got it if anyone did
   advice?: { day: string, last?: number }
   blocked?: Record<string, Blocked>
@@ -76,6 +84,7 @@ export function createCompanionStore(dir: string) {
       d.day = day
       d.used = {}
       d.voiceSec = 0
+      d.pictureN = 0
     }
     return d
   }
@@ -118,7 +127,7 @@ export function createCompanionStore(dir: string) {
     // A message of the chat, or the same one again after an edit
     heard(chatId: number, m: ChatMsg) {
       const d = data(chatId)
-      const msg = { ...m, text: m.text.slice(0, TEXT_MAX) }
+      const msg = { ...m, text: cut(m.text, TEXT_MAX) }
       const at = d.messages.findIndex(x => x.id === m.id)
       if (at >= 0) d.messages[at] = { ...d.messages[at], text: msg.text }
       else d.messages.push(msg)
@@ -129,8 +138,21 @@ export function createCompanionStore(dir: string) {
     transcribed(chatId: number, id: number, text: string) {
       const m = data(chatId).messages.find(x => x.id === id)
       if (!m) return
-      m.text = text.slice(0, TEXT_MAX)
+      m.text = cut(text, TEXT_MAX)
       m.heard = true
+      keep(chatId)
+    },
+    // What a picture shows, in a line
+    described(chatId: number, id: number, shows: string) {
+      const m = data(chatId).messages.find(x => x.id === id)
+      if (!m) return
+      m.shows = cut(shows, 600)
+      keep(chatId)
+    },
+    picturesUsed: (chatId: number, day: string) => today(chatId, day).pictureN ?? 0,
+    pictureSpent(chatId: number, day: string) {
+      const d = today(chatId, day)
+      d.pictureN = (d.pictureN ?? 0) + 1
       keep(chatId)
     },
     // Voice heard today in the background, in seconds of what was said
@@ -152,7 +174,7 @@ export function createCompanionStore(dir: string) {
       const d = data(chatId)
       const gone = new Set(ids)
       d.messages = d.messages.filter(m => !gone.has(m.id))
-      if (notes !== undefined) d.notes = notes.slice(0, NOTES_MAX)
+      if (notes !== undefined) d.notes = cut(notes, NOTES_MAX)
       keep(chatId)
     },
     wipe(chatId: number) {
@@ -198,7 +220,7 @@ export function createCompanionStore(dir: string) {
     remind(chatId: number, r: Omit<Reminder, 'id'>): Reminder | null {
       const d = data(chatId)
       if (d.reminders.filter(x => x.by === r.by).length >= REMINDERS_EACH) return null
-      const made = { ...r, text: r.text.slice(0, REMINDER_TEXT_MAX), id: randomBytes(3).toString('hex') }
+      const made = { ...r, text: cut(r.text, REMINDER_TEXT_MAX), id: randomBytes(3).toString('hex') }
       d.reminders.push(made)
       keep(chatId)
       return made

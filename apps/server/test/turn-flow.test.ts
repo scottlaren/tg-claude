@@ -524,6 +524,32 @@ test('after a restart the team board is edited in place, not sent and pinned aga
   await h.stop?.()
 })
 
+test('while Telegram cannot edit the board, the board waits: it is not sent again and again', async () => {
+  const h = start({ cfg: { boardTickMs: 50 } })
+  const agent = `${GROUP}:9`
+  h.topics.set(agent, { head: KEY, workerName: 'Ads' })
+  h.topics.set(KEY, { workers: [agent], boardId: 42 })
+  const boards = () => h.calls.filter(c => c.method === 'sendRichMessage' && /Team/.test(JSON.stringify(c.payload))).length
+  const edits = () => h.calls.filter(c => c.method === 'editMessageText' && c.payload.message_id === 42).length
+  // The night of 26.11: an hour of 502 on every edit, then timeouts and “canceled” while it came back
+  for (const answer of ["Call to 'editMessageText' failed! (502: Bad Gateway)", "Call to 'editMessageText' failed! (504: Gateway Timeout)", "Call to 'editMessageText' failed! (400: Bad Request: canceled by new edit message request)", "Call to 'editMessageText' failed! (429: Too Many Requests: retry after 5)", 'Network request failed']) {
+    h.fail(c => c.method === 'editMessageText', answer)
+    const before = edits()
+    await until(() => edits() >= before + 3, 3000)
+    assert.equal(boards(), 0, answer)
+    assert.ok(!h.calls.some(c => c.method === 'pinChatMessage' || c.method === 'deleteMessage'), answer)
+    assert.equal(h.topics.get(KEY).boardId, 42, 'the same board is still the board')
+  }
+  // Telegram is back: the edit goes through, and that is all
+  h.fail()
+  const before = edits()
+  await until(() => edits() > before, 3000)
+  await sleep(200)
+  assert.equal(edits(), before + 1, 'once it reads right, nothing more is asked')
+  assert.equal(boards(), 0)
+  await h.stop?.()
+})
+
 test('the team board says which agent works on another computer, and how busy the team\'s computers are', async () => {
   const h = start({ elsewhere: true, cfg: { boardTickMs: 50 } })
   Object.assign(h.gateway.device('pc')!, { cores: 28, load: { busy: 60, at: Date.now() } })

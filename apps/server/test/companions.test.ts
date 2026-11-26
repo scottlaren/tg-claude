@@ -98,6 +98,8 @@ test('addressing: the bot by name, @claude, a reply to it; nothing that only loo
   assert.ok(addressed({ ...base, text: 'and this?', reply_to_message: { message_id: 4, from: { id: 999, is_bot: true } } } as never, me))
   assert.ok(!addressed({ ...base, text: 'and this?', reply_to_message: { message_id: 4, from: { id: 7, is_bot: false } } } as never, me))
   assert.ok(addressed({ ...base, caption: '@claude what is it', photo: [] } as never, me))
+  // An ordinary supergroup numbers a reply's thread by the message it began with: a reply to that message is a reply
+  assert.ok(addressed({ ...base, text: 'and this?', message_thread_id: 4, reply_to_message: { message_id: 4, from: { id: 999, is_bot: true } } } as never, me))
   // In a topic the bot opened, every message "replies" to the opening one
   assert.ok(!addressed({ ...base, text: 'just talking', is_topic_message: true, message_thread_id: 4, reply_to_message: { message_id: 4, from: { id: 999, is_bot: true }, forum_topic_created: {} } } as never, me))
 })

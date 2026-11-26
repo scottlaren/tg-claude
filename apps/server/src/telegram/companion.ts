@@ -7,9 +7,11 @@ import type { Profiles } from '../profiles.ts'
 import { REMINDERS_EACH, KEEP_MESSAGES, type ChatMsg, type Companion, type CompanionStore, type Reminder } from '../companions.ts'
 import { COMPANION_READ, COMPANION_SEARCH, FIND_PICTURE, REMIND, type companionTurn, type RemindArgs } from '../claude/companion.ts'
 import type { PromptImage } from '../claude/runner.ts'
-import { advicePrompt, adviceSystem, companionPrompt, companionSystem, notebookPrompt, NOTEBOOK_SYSTEM, stamp, type Speaker } from '../claude/companion-prompt.ts'
+import { advicePrompt, adviceSystem, companionPrompt, companionSystem, notebookPrompt, NOTEBOOK_SYSTEM, PICTURE_SYSTEM, stamp, type Speaker } from '../claude/companion-prompt.ts'
 import { createLeakGuard, type Secret } from './leak.ts'
 import { carriesData } from '../net.ts'
+import { cut } from './text.ts'
+import { richPlain } from './incoming.ts'
 import { COMMONS_FILES } from '../commons.ts'
 import { parseAt } from '../schedule.ts'
 import { redact } from './redact.ts'
@@ -37,6 +39,13 @@ const VOICE_MAX_SEC = 300
 const VOICE_QUIET_MAX_SEC = 120
 const VOICE_QUIET_DAILY_SEC = 30 * 60
 const VOICE_QUIET_QUEUE = 20
+// Pictures looked at without being asked: so many a day for a chat. Each is a request to the cheap model
+const PICTURE_QUIET_DAILY = 40
+const PICTURE_QUIET_QUEUE = 20
+// Pictures of one album that go to Claude together
+const ALBUM_MAX = 6
+// An album arrives as messages of its own, one after another: this long for the rest of it to come
+const ALBUM_WAIT_MS = 1500
 const PHOTO_MAX_BYTES = Math.floor(3.75 * 1024 * 1024)
 const NOTICE_GAP_MS = 10 * 60_000
 const COMMAND_GAP_MS = 3000
@@ -62,10 +71,12 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // @bot_name or @claude as a word of its own: not an e-mail address, not @claude_fan
 export const mentions = (text: string, username: string) => new RegExp(`(^|[^\\w@.])@(${escapeRe(username)}|claude)(?!\\w)`, 'i').test(text)
 
-// The message a reply points at. In a topic every message "replies" to the one that opened the topic
+// The message a reply points at. In a topic every message "replies" to the one that opened the topic: that is no reply.
+// Only in a topic: an ordinary supergroup gives a reply the id of the message its thread began with as its thread, and
+// for a reply to that very message the two are the same number
 const repliedTo = (m: Message) => {
   const r = m.reply_to_message
-  return r && !r.forum_topic_created && r.message_id !== m.message_thread_id ? r : undefined
+  return r && !r.forum_topic_created && !(m.is_topic_message && r.message_id === m.message_thread_id) ? r : undefined
 }
 
 export function addressed(m: Message, me: { id: number, username: string }) {
@@ -93,9 +104,14 @@ export function heardOf(m: Message, s: Speaker): ChatMsg | null {
   const forwarded = m.forward_origin ? '[forwarded] ' : ''
   const caption = m.caption ?? ''
   if (m.text) return { ...base, text: forwarded + m.text }
+  // A table, a list, a formatted note: what it says, as plain words
+  if (m.rich_message) return { ...base, text: forwarded + richPlain(m.rich_message.blocks) }
   if (m.voice) return { ...base, kind: 'voice', text: `(${clock(m.voice.duration)}, not listened to)` }
   if (m.video_note) return { ...base, kind: 'video', text: `(round video, ${clock(m.video_note.duration)})` }
-  if (m.photo) return { ...base, kind: 'photo', text: forwarded + caption }
+  if (m.photo) {
+    const best = [...m.photo].reverse().find(x => (x.file_size ?? 0) <= PHOTO_MAX_BYTES)
+    return { ...base, kind: 'photo', text: forwarded + caption, ...(best && { photo: best.file_id }), ...(m.media_group_id && { group: m.media_group_id }) }
+  }
   if (m.video || m.animation) return { ...base, kind: 'video', text: forwarded + caption }
   if (m.audio) return { ...base, kind: 'file', text: [m.audio.title ?? m.audio.file_name ?? 'audio', caption].filter(Boolean).join(': ') }
   if (m.document) return { ...base, kind: 'file', text: [m.document.file_name ?? 'file', caption].filter(Boolean).join(': ') }
@@ -146,21 +162,26 @@ export function companionCard(c: Companion, o: { model: string, profile?: string
       `- 🧠 ${tr('Model', 'Модель')}: **${mdText(o.model)}**`,
       ...(o.profile ? [`- 👤 ${tr('Account', 'Аккаунт')}: **${mdText(o.profile)}**`] : []),
       `- 🔢 ${tr('Answers a day', 'Ответов в день')}: **${dailyLabel(c.daily)}** · ${tr('today', 'сегодня')} ${o.usedToday}`,
-      `- 🌐 ${tr('The web: search and links', 'Интернет: поиск и ссылки')}: **${c.search ? tr('on', 'включён') : tr('off', 'выключен')}**`,
+      `- 🌐 ${tr('The web (search, links)', 'Интернет (поиск, ссылки)')}: **${c.search ? tr('on', 'включён') : tr('off', 'выключен')}**`,
       `- 🌅 ${tr('Advice in the morning', 'Совет по утрам')}: **${c.advice ? tr('on', 'включён') : tr('off', 'выключен')}**`,
       `- 🎙 ${tr('Voice messages heard in the background', 'Голосовые в фоне')}: **${c.voices ? tr('on', 'включены') : tr('off', 'выключены')}**`,
+      `- 🖼 ${tr('Pictures looked at in the background', 'Картинки в фоне')}: **${c.pictures ? tr('on', 'включены') : tr('off', 'выключены')}**`,
       ...(o.blocked ? [`- 🚫 ${tr('Not answered', 'Не отвечаю')}: **${o.blocked}**`] : []),
     ].join('\n'),
     ...(c.on ? [] : [tr('Nothing is read or answered there until you switch it on.', 'Пока не включишь, я там ничего не читаю и не отвечаю.')]),
   ].join('\n\n')
   const k = `cmp:${c.key}`
+  // Two buttons share the width of a phone: a name longer than a dozen characters is cut. A switch is named by what
+  // it switches, with a tick while it is on
+  const sw = (on: boolean | undefined, name: string) => (on ? `${name} ✓` : name)
   const rows: RichButton[][] = [
     [{ text: tr('🧠 Model', '🧠 Модель'), data: `${k}:mdl` }, { text: tr('🔢 Daily limit', '🔢 Предел в день'), data: `${k}:lim` }],
-    [...(o.profile ? [{ text: tr('👤 Account', '👤 Аккаунт'), data: `${k}:acc` }] : []), { text: c.search ? tr('🌐 Web off', '🌐 Выключить интернет') : tr('🌐 Web on', '🌐 Включить интернет'), data: `${k}:web` }],
-    [{ text: c.advice ? tr('🌅 Morning advice off', '🌅 Выключить совет по утрам') : tr('🌅 Morning advice on', '🌅 Включить совет по утрам'), data: `${k}:adv` }, { text: c.voices ? tr('🎙 Voices off', '🎙 Выключить голосовые') : tr('🎙 Voices on', '🎙 Включить голосовые'), data: `${k}:vcs` }],
+    [...(o.profile ? [{ text: tr('👤 Account', '👤 Аккаунт'), data: `${k}:acc` }] : []), { text: sw(c.search, tr('🌐 The web', '🌐 Интернет')), data: `${k}:web` }],
+    [{ text: sw(c.voices, tr('🎙 Voices', '🎙 Голосовые')), data: `${k}:vcs` }, { text: sw(c.pictures, tr('🖼 Pictures', '🖼 Картинки')), data: `${k}:pic` }],
+    [{ text: sw(c.advice, tr('🌅 Advice', '🌅 Совет')), data: `${k}:adv` }],
     [...(o.blocked ? [{ text: tr('🚫 Block list', '🚫 Блок-лист'), data: `${k}:blk` }] : [])],
     [c.on ? { text: tr('⏸ Pause', '⏸ Пауза'), data: `${k}:off` } : { text: tr('✅ Switch on', '✅ Включить'), data: `${k}:on`, style: 'success' as const }],
-    [{ text: tr('🧹 Erase memory', '🧹 Стереть память'), data: `${k}:wipe` }, { text: tr('🚪 Leave the chat', '🚪 Уйти из чата'), data: `${k}:quit` }],
+    [{ text: tr('🧹 Erase', '🧹 Стереть'), data: `${k}:wipe` }, { text: tr('🚪 Leave', '🚪 Уйти из чата'), data: `${k}:quit` }],
   ].filter(row => row.length)
   return { md, rows }
 }
@@ -174,7 +195,7 @@ const keyboardOf = (rows: RichButton[][]) => {
   return kb
 }
 
-export function createCompanion({ bot, store, owners, models, profiles, log, zone, turn, secrets, cwd, taken, say, sendChoice, editRich, hearVoice, hearQuietly, picture, findPictures, download, openable, background, now = () => Date.now(), random = Math.random }: {
+export function createCompanion({ bot, store, owners, models, profiles, log, zone, turn, secrets, cwd, taken, say, sendChoice, editRich, hearVoice, hearQuietly, picture, findPictures, download, openable, background, now = () => Date.now(), random = Math.random, albumWaitMs = ALBUM_WAIT_MS }: {
   bot: Bot
   store: CompanionStore
   owners: Owners
@@ -205,6 +226,7 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
   background: (work: Promise<unknown>) => void
   now?: () => number
   random?: () => number
+  albumWaitMs?: number
 }) {
   const { api } = bot
   const me = () => ({ id: bot.botInfo.id, username: bot.botInfo.username })
@@ -259,6 +281,7 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
       : tr('- **I can**: answer and explain, retell what was discussed here, set reminders.', '- **Умею**: отвечать и объяснять, пересказывать, что тут обсуждали, ставить напоминания.'),
     tr("- **I don't**: run commands, open files, reach anyone's devices. Here I only talk.", '- **Не делаю**: не выполняю команды, не открываю файлы, не захожу ни на чьи устройства. Здесь я только разговариваю.'),
     ...(c.voices ? [tr(`- **Voice messages** up to ${VOICE_QUIET_MAX_SEC / 60} minutes I hear as they come, silently, to follow the talk.`, `- **Голосовые** до ${VOICE_QUIET_MAX_SEC / 60} минут слушаю сразу и молча, чтобы понимать разговор.`)] : []),
+    ...(c.pictures ? [tr('- **Pictures** I look at as they come, silently, and keep a line about what each shows.', '- **Картинки** смотрю сразу и молча и храню строчку о том, что на каждой.')] : []),
     ...(c.advice ? [tr('- **In the morning** one of those who wrote here yesterday gets a word of advice nobody asked for.', '- **По утрам** кто-то из писавших здесь вчера получает непрошеный совет.')] : []),
     tr(`- **What I see**: the messages of this chat while I am in it. I keep the last ${KEEP_MESSAGES} and short notes on what came before, to follow the conversation.`, `- **Что вижу**: сообщения этого чата, пока я в нём. Храню последние ${KEEP_MESSAGES} и короткие заметки о том, что было раньше, чтобы держать нить разговора.`),
     c.daily
@@ -466,17 +489,26 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
           return null
         })
       }
-      const look = async (photo: NonNullable<Message['photo']>) => {
-        const p = [...photo].reverse().find(x => (x.file_size ?? 0) <= PHOTO_MAX_BYTES)
-        if (!p) return false
+      const lookAt = async (fileId: string) => {
         status('picture')
         try {
-          images.push(await picture(p.file_id, p.file_size))
+          images.push(await picture(fileId))
           return true
         } catch (e) {
           log.warn('companion picture', (e as Error).message)
           return false
         }
+      }
+      const look = async (photo: NonNullable<Message['photo']>) => {
+        const p = [...photo].reverse().find(x => (x.file_size ?? 0) <= PHOTO_MAX_BYTES)
+        return p ? lookAt(p.file_id) : false
+      }
+      // The pictures of one album, as the chat's memory has them, and how many of them could be loaded
+      const album = (group?: string) => (group ? store.messages(chatId).filter(x => x.group === group && x.photo).slice(0, ALBUM_MAX) : [])
+      const lookAtAll = async (all: ChatMsg[]) => {
+        let n = 0
+        for (const x of all) if (await lookAt(x.photo!)) n++
+        return n
       }
       if (m.voice) {
         const text = await listen(m.voice)
@@ -484,7 +516,14 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
         store.transcribed(chatId, m.message_id, text)
         ask.text = text
       }
-      if (m.photo && await look(m.photo)) attached.push('The picture attached to this request came with the message.')
+      if (m.photo) {
+        if (m.media_group_id) await new Promise(r => setTimeout(r, albumWaitMs))
+        const all = album(m.media_group_id)
+        if (all.length > 1) {
+          const n = await lookAtAll(all)
+          if (n) attached.push(`The ${n} pictures attached to this request came with the message, as one album.`)
+        } else if (await look(m.photo)) attached.push('The picture attached to this request came with the message.')
+      }
       const target = repliedTo(m)
       if (target && target.from?.id !== me().id) {
         const author = speakerOf(target)
@@ -495,15 +534,22 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
           const text = known ?? await listen(target.voice)
           if (text && !known) store.transcribed(chatId, target.message_id, text)
           attached.push(text ? `It replies to voice message #${target.message_id} from ${from}, which says: ${text.replace(/\s+/g, ' ')}` : `It replies to voice message #${target.message_id} from ${from}, which could not be made out.`)
+        } else if (target.photo && album(target.media_group_id).length > 1) {
+          const all = album(target.media_group_id)
+          const n = await lookAtAll(all)
+          attached.push(n ? `The ${n} pictures attached to this request are the album it replies to (messages ${all.map(x => `#${x.id}`).join(', ')}), from ${from}, in that order.` : `It replies to an album of pictures (#${target.message_id}) that could not be loaded.`)
         } else if (target.photo) {
           attached.push(await look(target.photo) ? `The picture attached to this request is message #${target.message_id} from ${from}, which it replies to.` : `It replies to a picture (#${target.message_id}) that could not be loaded.`)
         } else if (target.document || target.audio || target.video || target.animation || target.video_note) {
           attached.push(`It replies to a file or video (#${target.message_id}): those never reach you.`)
         } else if (!store.messages(chatId).some(x => x.id === target.message_id)) {
-          const old = (target.text ?? target.caption ?? '').replace(/\s+/g, ' ').slice(0, 1500)
+          const old = cut((target.text ?? target.caption ?? (target.rich_message ? richPlain(target.rich_message.blocks) : '')).replace(/\s+/g, ' '), 1500)
           if (old) attached.push(`It replies to an older message from ${from}: ${old}`)
         }
       }
+      // Nothing asked in so many words: the conversation is the request
+      const own = ask.text.replace(new RegExp(`@(${escapeRe(me().username)}|claude)(?!\\w)`, 'gi'), '').replace(/[\s\p{P}]/gu, '')
+      if (!own && !m.voice) attached.push(`It is a bare mention with no request of its own: the request is the conversation above${target ? ' and what it replies to' : ''}. Join in with what helps there.`)
       const res = await turn({
         system: companionSystem({ botName: me().username, title: c.title, owner: c.owner, search: c.search, pictures: c.search, reminders: true, zone: zone() }),
         prompt: companionPrompt({ notes: store.notes(chatId), messages: store.messages(chatId), ask, owner: c.owner, zone: zone(), now: now(), attached, waiting }),
@@ -552,7 +598,7 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
       }
       const whole = res.text.trim()
       if (!whole) return
-      const text = whole.length > ANSWER_MAX ? `${whole.slice(0, ANSWER_MAX).trimEnd()}…` : whole
+      const text = whole.length > ANSWER_MAX ? `${cut(whole, ANSWER_MAX).trimEnd()}…` : whole
       const day = today()
       store.spend(chatId, day, s.id)
       const kinds = guard(text)
@@ -605,6 +651,40 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
     if (!v || v.duration > VOICE_QUIET_MAX_SEC || voices.length >= VOICE_QUIET_QUEUE) return
     voices.push({ chatId, id: m.message_id, fileId: v.file_id, size: v.file_size, sec: v.duration })
     if (!hearing) background(hearWaiting())
+  }
+
+  // Pictures nobody asked about: each is looked at once by the cheap model, and a line about what it shows goes into
+  // the chat's memory. One at a time for all chats, with no sign of it in the chat
+  const unseen: { chatId: number, id: number, fileId: string, caption: string }[] = []
+  let seeing = false
+  async function seeWaiting() {
+    seeing = true
+    try {
+      for (let p = unseen.shift(); p; p = unseen.shift()) {
+        const c = store.get(p.chatId)
+        const day = today()
+        if (!c?.on || !c.pictures || store.picturesUsed(p.chatId, day) >= PICTURE_QUIET_DAILY) continue
+        store.pictureSpent(p.chatId, day)
+        try {
+          const guard = createLeakGuard(await secrets(profileOf(c)))
+          const res = await turn({
+            system: PICTURE_SYSTEM, prompt: p.caption ? `Its caption: ${p.caption.replace(/\s+/g, ' ')}` : 'It has no caption.', images: [await picture(p.fileId)],
+            model: cheapModel(), env: profiles.env(profileOf(c)), cwd: cwd(), search: false,
+          })
+          const shows = res.isError ? '' : res.text.trim().replace(/\s+/g, ' ')
+          if (shows && !guard(shows).length && store.get(p.chatId)) store.described(p.chatId, p.id, shows)
+        } catch (e) {
+          log.warn('companion picture', (e as Error).message)
+        }
+      }
+    } finally {
+      seeing = false
+    }
+  }
+  function seeLater(chatId: number, heard: ChatMsg) {
+    if (!heard.photo || unseen.length >= PICTURE_QUIET_QUEUE) return
+    unseen.push({ chatId, id: heard.id, fileId: heard.photo, caption: heard.text })
+    if (!seeing) background(seeWaiting())
   }
 
   // The bot stops answering this person, tells the chat once and leaves the rest to the owner
@@ -725,6 +805,7 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
     if (!heard || (edited && !store.messages(chatId).some(x => x.id === m.message_id))) return
     store.heard(chatId, heard)
     if (c.voices && !edited && !shut && !addressed(m, me())) hearLater(chatId, m)
+    if (c.pictures && !edited && !shut) seeLater(chatId, heard)
     // A chat that talks for days without asking the bot anything fills up all the same: its oldest messages go to the
     // notebook then too, or they would be dropped with nothing kept of them. After an answer this happens by itself
     if (store.foldable(chatId) && !addressed(m, me())) {
@@ -787,7 +868,7 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
   })
 
   // The card, in the owner's private chat: each tap redraws it
-  bot.callbackQuery(/^cmp:([0-9a-f]{8}):(home|mdl|lim|acc|web|adv|vcs|blk|unb|on|off|wipe|quit)(?::([\w.[\]-]+))?$/, async ctx => {
+  bot.callbackQuery(/^cmp:([0-9a-f]{8}):(home|mdl|lim|acc|web|adv|vcs|pic|blk|unb|on|off|wipe|quit)(?::([\w.[\]-]+))?$/, async ctx => {
     const [, key, what, value] = ctx.match
     const found = store.byKey(key)
     const messageId = ctx.callbackQuery.message?.message_id
@@ -818,6 +899,7 @@ export function createCompanion({ bot, store, owners, models, profiles, log, zon
     if (what === 'web') set({ search: !found.search })
     if (what === 'adv') set({ advice: !found.advice })
     if (what === 'vcs') set({ voices: !found.voices })
+    if (what === 'pic') set({ pictures: !found.pictures })
     if (what === 'unb' && value && store.unblock(chatId, Number(value))) log.info('companion unblocked', { chatId, user: Number(value) })
     if (what === 'blk') {
       const list = Object.entries(store.blocked(chatId))

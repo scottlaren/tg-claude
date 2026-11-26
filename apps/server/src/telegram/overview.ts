@@ -6,7 +6,7 @@ import type { NowRow } from './now-widget.ts'
 
 // /now: what runs and what waits for the user, and nothing else, each line a way straight to its topic
 
-const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+import { trunc } from './text.ts'
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
 export type WaitKind = 'permission' | 'mcp' | 'folder' | 'question' | 'survey' | 'browser' | 'route' | 'project' | 'computer' | 'delete' | 'schedule' | 'retry' | 'context' | 'rule' | 'skill' | 'speech' | 'picker' | 'projectName' | 'offline' | 'signIn'

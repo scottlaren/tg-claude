@@ -136,7 +136,9 @@ test('a turn leaves a reaction only when it failed', () => {
 
 test('the first message of a topic is not a reply, whatever Telegram marks', () => {
   assert.equal(replyTo({ message_id: 7, forum_topic_created: { name: 'x' } }), '')
-  assert.equal(replyTo({ message_id: 7, text: 'root' }, { message_thread_id: 7 }), '')
+  assert.equal(replyTo({ message_id: 7, text: 'root' }, { message_thread_id: 7, is_topic_message: true }), '')
+  // Outside topics a supergroup numbers a reply's thread by the message it began with: a reply to that message is one
+  assert.match(replyTo({ message_id: 7, text: 'root' }, { message_thread_id: 7 }), /replies to[\s\S]*> root/)
 })
 
 test("the bot's rich answers are read without what is folded", () => {

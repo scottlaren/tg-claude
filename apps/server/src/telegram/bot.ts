@@ -218,7 +218,7 @@ const onDevice = (d: { id: string, name: string }) => (isCloud(d.id) ? tr('in th
 // Said whenever a topic settles in the cloud: it is a waiting room for projects, not their home
 const cloudNote = (deviceId: string) => (isCloud(deviceId) ? tr("\n<i>☁️ The cloud is a temporary place: once a computer is on, I'll offer to move the project there.</i>", '\n<i>☁️ Облако — временное место: когда включится компьютер, предложу перенести проект туда.</i>') : '')
 
-const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+import { trunc, wellFormed } from './text.ts'
 // Topic id for messages inside a private-chat topic; undefined for the plain chat
 const topicOf = (msg?: Message) => (msg?.is_topic_message ? msg.message_thread_id : undefined)
 const where = (topicId?: number) => (topicId ? { message_thread_id: topicId } : {})
@@ -341,7 +341,8 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     const rich = payload.rich_message as { markdown?: string } | undefined
     return rich?.markdown ? { ...payload, rich_message: { ...rich, markdown: keepOwnButtons(rich.markdown) } } : payload
   }
-  api.config.use((prev, method, payload, signal) => prev(method, animatePayload(method, ownButtonsOnly(payload as Record<string, unknown>)) as typeof payload, signal))
+  // Last of all, whatever was cut on the way: half a character anywhere in a message and Telegram refuses all of it
+  api.config.use((prev, method, payload, signal) => prev(method, wellFormed(animatePayload(method, ownButtonsOnly(payload as Record<string, unknown>))) as typeof payload, signal))
   // grammY handles updates one at a time, and a handler it waits for holds up every topic and account, with /stop and
   // permission buttons among them. What takes long runs beside the queue
   const inFlight = new Set<Promise<unknown>>()
@@ -6269,6 +6270,11 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
       .map(d => `${iconOf(d)} ${mdText(d.name)} ${freshLoad(d)!.busy}%`)
     return [tr('### 🧭 Team', '### 🧭 Команда'), ...team.map(boardEntry), ...queued, `<footer>${[...sums, ...loads, tr('updates by itself', 'обновляется само')].join(' · ')}</footer>`].join('\n\n')
   }
+  // What a failed edit of the board means. Only a board that is gone is sent anew. While Telegram is down or slow every
+  // edit fails, and a board sent at each failure became thirty boards in every head's topic the moment it answered again
+  const BOARD_GONE = /message to edit not found|message was deleted|message can't be edited|MESSAGE_ID_INVALID/i
+  // Heads whose board could not be edited for now: said once in the log, not at every tick
+  const boardWaits = new Set<string>()
   async function drawBoard(headKey: string) {
     const md = boardMarkdown(headKey)
     const t = topics.get(headKey)
@@ -6284,7 +6290,20 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     }
     if (boards.get(headKey) === md) return
     const { chatId, topicId } = parseKey(headKey)
-    if (t.boardId && await editRich(chatId, t.boardId, md)) return void boards.set(headKey, md)
+    if (t.boardId) {
+      const failed = await api.raw.editMessageText({ chat_id: chatId, message_id: t.boardId, rich_message: { markdown: md } }).then(() => '', e => (e as Error).message || 'failed')
+      if (!failed || /message is not modified/.test(failed)) {
+        boardWaits.delete(headKey)
+        return void boards.set(headKey, md)
+      }
+      if (!BOARD_GONE.test(failed)) {
+        // Still there, as far as anyone knows: the next tick tries again
+        if (!boardWaits.has(headKey)) log.warn('team board waits', failed)
+        boardWaits.add(headKey)
+        return
+      }
+    }
+    boardWaits.delete(headKey)
     const old = t.boardId
     const sent = await api.sendRichMessage(chatId, { markdown: md }, { ...where(topicId), disable_notification: true }).catch(e => log.warn('team board', (e as Error).message))
     if (!sent) return
