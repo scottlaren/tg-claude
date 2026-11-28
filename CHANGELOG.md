@@ -2,6 +2,14 @@
 
 Each version is a `vX.Y.Z` tag and a GitHub Release with the same text: the bot shows it in the new-version notice, in its own language (from 0.5.3 English first, then Russian under `### Русский`).
 
+## 0.19.3
+
+- **A bigger team by a button.** `/team` now has buttons for how many agents the topic's head may have at once: 5, 10, 15 or 20. When the head runs into the limit, it tells you where to raise it.
+
+### Русский
+
+- **Команда побольше по кнопке.** В `/team` появились кнопки: сколько агентов может быть у хеда этого топика одновременно, 5, 10, 15 или 20. Упёршись в предел, хед скажет, где его поднять.
+
 ## 0.19.2
 
 - **“Stop asking” works for files in a group.** A file bound for a group that others read is asked about in every mode, and the two buttons under that question, “until the task ends” and “stop asking in this topic”, did nothing for the next file: each one asked again. They now hold as they say, when tapped under a question about a file.
