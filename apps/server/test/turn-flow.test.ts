@@ -2065,3 +2065,38 @@ test('the computer goes away in the middle of a conversation: said once, and onc
   h.setOnline(true)
   assert.match(await turnOf(h, 'go on then', 's1'), /No longer in force: "# This topic's computer is offline"\./)
 })
+
+test('a head has five agents at most until the user picks more under /team; the refusal tells it where that is done', async () => {
+  const h = start()
+  const agents = [9, 11, 12, 13, 14].map(n => `${GROUP}:${n}`)
+  agents.forEach((k, i) => h.topics.set(k, { head: KEY, workerName: `A${i + 1}` }))
+  h.topics.set(KEY, { workers: agents })
+  await h.text('one more agent')
+  const turn = h.processQueue(KEY)
+  await until(() => h.runs.length === 1)
+  const tools = (h.runs[0].o.botServers?.team as unknown as { instance: { _registeredTools: Record<string, { handler: (a: unknown) => Promise<{ content: { text: string }[] }> }> } }).instance._registeredTools
+  const sixth = () => tools.start_agent.handler({ name: 'A6', task: 'tests', model: 'sonnet', effort: 'medium', after: 'A1' }).then(r => r.content[0].text)
+  assert.match(await sixth(), /^You already have 5 agents, the most this topic allows: remove one first \(remove_agent\), or the user raises the limit with the buttons under \/team\.$/)
+
+  await h.text('/team')
+  const card = h.calls.findLast(c => JSON.stringify(c.payload).includes('tma:10'))!
+  const labels = () => (card.payload.reply_markup as { inline_keyboard: { text: string }[][] }).inline_keyboard[0].map(b => b.text)
+  assert.deepEqual(labels(), ['• 5', '10', '15', '20'])
+  assert.match(JSON.stringify(card.payload), /The server runs 2 tasks at once/)
+
+  // A number that isn't offered changes nothing, and neither does a tap in an agent's own topic
+  await h.tap('tma:500')
+  assert.equal(h.topics.get(KEY).agentsMax, undefined)
+
+  await h.tap('tma:10')
+  assert.equal(h.topics.get(KEY).agentsMax, 10)
+  const redrawn = h.calls.findLast(c => c.method === 'editMessageReplyMarkup')!
+  assert.deepEqual((redrawn.payload.reply_markup as { inline_keyboard: { text: string }[][] }).inline_keyboard[0].map(b => b.text), ['5', '• 10', '15', '20'])
+  assert.match(await sixth(), /«A6» will start when «A1» has finished/)
+
+  // Back to the default leaves nothing stored
+  await h.tap('tma:5')
+  assert.equal(h.topics.get(KEY).agentsMax, undefined)
+  h.runs[0].finish({ text: 'ok' })
+  await turn
+})

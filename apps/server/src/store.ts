@@ -94,6 +94,8 @@ export type Topic = {
   boardId?: number
   // Agents of this head that start when another of them has finished
   waitingAgents?: (StartAgent & { after: string })[]
+  // How many agents this head may have at once, chosen in /team; unset means the default
+  agentsMax?: number
   head?: string
   workerName?: string
   // What the head says this agent works on, a few words for the team's board

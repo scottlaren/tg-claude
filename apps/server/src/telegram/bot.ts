@@ -1831,7 +1831,11 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     }).catch(() => {})
   })
   // --- teams: a head topic starts agents, each a topic of its own; their reports wake the head ---------------
-  const MAX_WORKERS = 5
+  // How many agents one head may have at once: the user picks in /team. They run at most MAX_PARALLEL at a time
+  // whatever the choice, so a bigger team costs Claude limits, not the server
+  const AGENTS_DEFAULT = 5
+  const AGENTS_CHOICES = [5, 10, 15, 20]
+  const agentsMax = (headKey: string) => topics.get(headKey).agentsMax ?? AGENTS_DEFAULT
   // Reports that wake the head with no word from the user in between; past this the head waits for the user
   const MAX_WAKES = 20
   const teamWakes = new Map<string, number>()
@@ -1997,7 +2001,7 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         const head = topics.get(headKey)
         const team = workersOf(headKey)
         const waiting = head.waitingAgents ?? []
-        if (team.length + waiting.length >= MAX_WORKERS && !chained) return `You already have ${MAX_WORKERS} agents: remove one first (remove_agent).`
+        if (team.length + waiting.length >= agentsMax(headKey) && !chained) return `You already have ${agentsMax(headKey)} agents, the most this topic allows: remove one first (remove_agent), or the user raises the limit with the buttons under /team${agentsMax(headKey) < Math.max(...AGENTS_CHOICES) ? '' : ' (it is at its highest now)'}.`
         if (find(a.name) || sameName(waiting, a.name)) return `An agent named «${a.name}» already exists: pick another name or message it.`
         if (a.profile && !(await profiles.status(a.profile).catch(() => null))?.loggedIn) return `The profile ${a.profile} isn't signed in to Claude: leave profile out, or the user signs it in with /profiles.`
         if (a.after) {
@@ -2268,8 +2272,9 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
     if (t.head) return sendRich(ctx.chat.id, topicId, tr(`🤖 This is the agent **${t.workerName}** · 🧠 ${mindOf(t)}. ${topicMd(t.head, 'A head in another topic')} runs it; only a regular topic can start agents.`, `🤖 Это агент **${t.workerName}** · 🧠 ${mindOf(t)}. Им управляет ${topicMd(t.head, 'хед из другого топика')}; запускать агентов может только обычный топик.`))
     const team = workersOf(key)
     const waiting = t.waitingAgents ?? []
+    const limit = { reply_markup: agentsKb(key) }
     if (!team.length && !waiting.length) {
-      return sendRich(ctx.chat.id, topicId, tr('### 🤖 No agents here yet\n\nAsk Claude to put a team together, for example:\n\n> hand this to agents: the layout on the PC, the texts in the cloud\n\n<footer>It becomes the head: starts the agents, picks a model for each, and their reports come here</footer>', '### 🤖 Агентов пока нет\n\nПопроси Claude собрать команду, например:\n\n> раздай это агентам: вёрстку на ПК, тексты в облаке\n\n<footer>Он станет хедом: сам запустит агентов, выберет каждому модель, а их отчёты будут приходить сюда</footer>'))
+      return sendRich(ctx.chat.id, topicId, tr('### 🤖 No agents here yet\n\nAsk Claude to put a team together, for example:\n\n> hand this to agents: the layout on the PC, the texts in the cloud\n\n<footer>It becomes the head: starts the agents, picks a model for each, and their reports come here</footer>', '### 🤖 Агентов пока нет\n\nПопроси Claude собрать команду, например:\n\n> раздай это агентам: вёрстку на ПК, тексты в облаке\n\n<footer>Он станет хедом: сам запустит агентов, выберет каждому модель, а их отчёты будут приходить сюда</footer>') + `\n\n${agentsLine()}`, limit)
     }
     return sendRich(ctx.chat.id, topicId, [
       tr('### Agents', '### Агенты'),
@@ -2278,7 +2283,28 @@ export function createBot({ cfg, topics, workspaces, gateway, registry, pairing,
         return `| 🤖 ${topicMd(k, w.workerName ?? '')} | ${placeOf(w)} | ${mindOf(w)} | ${STATE_LABEL[stateOf(k)]} |`
       }), ...waiting.map(w => `| ⏳ ${w.name} | — | — | ${tr(`waits for ${w.after}`, `ждёт ${w.after}`)} |`)].join('\n'),
       tr('The head starts agents, gives them tasks and removes them. You can look in on an agent and answer it in its topic.', 'Хед сам запускает агентов, даёт им задачи и удаляет их. Заглянуть к агенту и ответить ему можно в его топике.'),
-    ].join('\n\n'))
+      agentsLine(),
+    ].join('\n\n'), limit)
+  })
+
+  const agentsLine = () => {
+    const tasks = count(cfg.maxParallel, ['task', 'tasks'], ['задача', 'задачи', 'задач'])
+    return tr(`**Agents at most** in this topic, below. The server runs ${tasks} at once, the rest wait their turn.`, `**Сколько агентов можно** в этом топике, ниже. На сервере разом идёт ${tasks}, остальные ждут очереди.`)
+  }
+  const agentsKb = (key: string) => {
+    const kb = new InlineKeyboard()
+    for (const n of AGENTS_CHOICES) kb.text(`${n === agentsMax(key) ? '• ' : ''}${n}`, `tma:${n}`)
+    return kb
+  }
+  bot.callbackQuery(/^tma:(\d+)$/, async ctx => {
+    const key = topicKey(ctx.chat!.id, topicOf(ctx.callbackQuery.message))
+    const n = Number(ctx.match[1])
+    if (!AGENTS_CHOICES.includes(n) || topics.get(key).head) return ctx.answerCallbackQuery()
+    const same = n === agentsMax(key)
+    topics.set(key, { agentsMax: n === AGENTS_DEFAULT ? undefined : n })
+    log.info('agents max', { key, max: n })
+    await ctx.answerCallbackQuery(tr(`Up to ${n} agents here`, `До ${n} агентов в этом топике`))
+    if (!same) await ctx.editMessageReplyMarkup({ reply_markup: agentsKb(key) }).catch(() => {})
   })
 
   // --- deleting topics: by /delete, or after TOPIC_TTL_DAYS of quiet with a warning a day ahead -----------
